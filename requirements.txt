@@ -1,8 +1,10 @@
 fastapi
 uvicorn[standard]
-psycopg[binary]
-openai
-python-dotenv
+
 sqlalchemy
+psycopg2-binary==2.9.9
 pgvector
+
 pdfplumber
+python-dotenv
+openai
