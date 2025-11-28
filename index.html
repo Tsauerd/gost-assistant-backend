@@ -6,6 +6,7 @@
     <title>ГОСТ AI // NEURAL INTERFACE</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
     
+    <!-- Подключаем MathJax для формул -->
     <script>
         window.MathJax = {
             tex: {
@@ -183,7 +184,6 @@
             padding: 1.5rem;
             margin-bottom: 1rem;
             line-height: 1.6;
-            /* Убираем white-space: pre-wrap, так как будем использовать <br> */
         }
 
         .context-card {
@@ -193,7 +193,7 @@
             padding: 1rem;
             border: 1px solid #222;
             border-radius: 6px;
-            white-space: pre-wrap; /* Для контекста оставляем как есть */
+            white-space: pre-wrap;
         }
 
         .badge {
@@ -206,7 +206,6 @@
             margin-bottom: 10px;
         }
         
-        /* Исправление цвета формул для темной темы */
         mjx-container {
             color: var(--accent-color) !important;
         }
@@ -247,7 +246,10 @@
     </div>
 
     <script>
-        const backendUrl = "http://127.0.0.1:8000";
+        // !!! ВНИМАНИЕ !!!
+        // Вставь сюда ссылку, которую ты скопировал с Render (без слэша в конце)
+        // Пример: const backendUrl = "https://gost-assistant-backend-xxxx.onrender.com";
+        const backendUrl = "https://ВАШ_АДРЕС_С_RENDER.onrender.com"; 
 
         document.getElementById("sendBtn").addEventListener("click", async () => {
             const query = document.getElementById("query").value.trim();
@@ -263,7 +265,6 @@
                 return;
             }
 
-            // UI: loading
             statusEl.textContent = "ESTABLISHING UPLINK... [Sending Request]";
             statusEl.classList.add("blink");
             resultBox.style.display = "none";
@@ -292,20 +293,14 @@
                 statusEl.textContent = "DATA RECEIVED. RENDERING...";
                 statusEl.classList.remove("blink");
 
-                // --- 2. ОБРАБОТКА ОТВЕТА (HTML + MathJax) ---
+                // Обработка ответа (HTML + MathJax)
                 const rawAnswer = data.answer || "Нет ответа от нейросети.";
-                
-                // Заменяем символы переноса строки \n на тег <br>, чтобы текст не слипался
                 const htmlAnswer = rawAnswer.replace(/\n/g, "<br>");
-                
-                // Вставляем как HTML
                 resultEl.innerHTML = htmlAnswer;
 
-                // Запускаем отрисовку формул MathJax внутри блока resultEl
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     MathJax.typesetPromise([resultEl]).catch(err => console.error(err));
                 }
-                // ---------------------------------------------
 
                 if (data.context_used && data.context_used.length > 0) {
                     contextEl.textContent = data.context_used.join("\n\n------------------------\n\n");
@@ -318,7 +313,7 @@
 
             } catch (err) {
                 console.error(err);
-                statusEl.textContent = "CRITICAL FAILURE: " + err.message;
+                statusEl.textContent = "CONNECTION FAILURE: " + err.message + ". Проверь, работает ли сервер Render (статус Live).";
                 statusEl.classList.remove("blink");
             } finally {
                 btn.disabled = false;
