@@ -1,7 +1,7 @@
 # app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel          # <--- ВАЖНО: этот импорт вернули
+from pydantic import BaseModel
 from sqlalchemy import text as sql_text
 from typing import Optional
 
@@ -11,10 +11,10 @@ from .llm import call_llm
 
 app = FastAPI(title="GOST Assistant Backend")
 
-# На время разработки открываем CORS для всех источников
+# CORS: на время разработки можно оставить "*"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],     # потом сузим до домена Netlify/Render
+    allow_origins=["*"],         # потом сузим до Netlify-домена
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,7 +23,7 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     query: str
-    task_type: Optional[str] = "question"   # question, summary, extract и т.п.
+    task_type: Optional[str] = "question"
     model_version: Optional[str] = "mini"   # "mini" или "pro"
 
 
@@ -56,11 +56,10 @@ async def chat_endpoint(request: ChatRequest):
 
 Правила:
 1. Отвечай строго на основе приведённого ниже контекста (выдержек из ГОСТов и других документов).
-2. Если информации в контексте недостаточно, честно напиши, что точной нормы нет, и можешь дать аккуратный комментарий, но без выдуманных пунктов ГОСТ.
-3. Если в контексте есть таблицы в формате markdown (строки, начинающиеся с '|', и блоки с 'Таблица ... (markdown):'),
-   обязательно сохраняй их структуру и отображай как markdown-таблицы в ответе.
-4. Если таблиц нет, просто отвечай текстом.
-5. Всегда указывай, на какие пункты/разделы ГОСТ ты опираешься (номер ГОСТ, пункт, страница, если есть).
+2. Если информации в контексте недостаточно, честно напиши, что точной нормы нет.
+3. Если в контексте есть таблицы в формате markdown (строки с '|' и блоки 'Таблица ... (markdown):'),
+   сохраняй структуру таблиц.
+4. Всегда указывай, на какие пункты/разделы ГОСТ ты опираешься.
 
 Контекст:
 {context_text}
@@ -69,9 +68,8 @@ async def chat_endpoint(request: ChatRequest):
 {user_query}
 """
 
-    # 3. Выбираем модель (по переключателю mini/pro)
+    # 3. Выбираем модель (mini / pro)
     model_name = resolve_model_name(request.model_version)
-
     answer, usage = call_llm(full_prompt, model=model_name)
 
     # 4. Токены и стоимость
@@ -88,7 +86,6 @@ async def chat_endpoint(request: ChatRequest):
         if hasattr(usage, "output_tokens"):
             tokens_out = usage.output_tokens
 
-    # Тарифы
     if model_name == "gpt-4.1-mini":
         in_price = 0.40
         out_price = 1.60
