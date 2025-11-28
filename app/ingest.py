@@ -6,52 +6,102 @@ import pdfplumber
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text
 
+# Предполагается, что эти модули существуют в вашем проекте
 from .db import SessionLocal
 from .rag import embed_text  # используем нашу обновлённую функцию
 
 load_dotenv()
 
 
+def clean_cell_text(text: str) -> str:
+    """Убираем лишние переносы и пробелы для 'плоского' текста."""
+    if not text:
+        return ""
+    return " ".join(text.strip().split())
+
+
 def page_to_markdown(page) -> str:
     """
-    Достаём текст + таблицы с одной страницы и превращаем в markdown.
+    Достаём текст + таблицы с одной страницы.
+    Таблицы преобразуем в Markdown И добавляем их вербализацию (текстовое описание)
+    для улучшения семантического поиска.
     """
     parts = []
 
-    # Обычный текст
+    # 1. Обычный текст страницы
     text = page.extract_text() or ""
     if text.strip():
         parts.append(text.strip())
 
-    # Таблицы
+    # 2. Обработка таблиц
     tables = page.extract_tables()
     for t_idx, table in enumerate(tables or []):
         if not table:
             continue
-        # Первая строка — заголовок (часто так и есть)
-        header = table[0]
+        
+        # Первая строка — заголовок
+        header_raw = table[0]
         rows = table[1:] if len(table) > 1 else []
 
+        # Очищаем заголовки для использования в вербализации
+        # (Header: Value) работает лучше, чем сырой markdown
+        clean_headers = [clean_cell_text(h) for h in header_raw]
+
+        # --- Блок 1: Markdown представление (для визуального чтения LLM) ---
         md_lines = []
         # Заголовок
-        md_header = "| " + " | ".join(cell or "" for cell in header) + " |"
-        md_sep = "| " + " | ".join("---" for _ in header) + " |"
+        md_header = "| " + " | ".join(cell or "" for cell in header_raw) + " |"
+        md_sep = "| " + " | ".join("---" for _ in header_raw) + " |"
         md_lines.append(md_header)
         md_lines.append(md_sep)
 
-        # Строки
-        for row in rows:
-            line = "| " + " | ".join(cell or "" for cell in row) + " |"
-            md_lines.append(line)
+        # --- Блок 2: Вербализация (для embedding поиска) ---
+        # Формируем список предложений, описывающих каждую строку.
+        # Пример: "Температура, °C: ниже минус 30; Время оттаивания, ч: 5."
+        verbalized_rows = []
 
-        md_table = "\n".join(md_lines)
-        parts.append(f"Таблица {t_idx + 1} (markdown):\n{md_table}")
+        for row in rows:
+            # Добавляем строку в Markdown
+            # Заменяем None на пустую строку
+            clean_row_md = [cell if cell else "" for cell in row] 
+            line_md = "| " + " | ".join(clean_row_md) + " |"
+            md_lines.append(line_md)
+
+            # Формируем вербализацию строки
+            # Собираем пары "Заголовок: Значение"
+            # Пропускаем пустые ячейки, чтобы не создавать мусор
+            row_pairs = []
+            for h, cell in zip(clean_headers, row):
+                c_text = clean_cell_text(cell)
+                if h and c_text:
+                    row_pairs.append(f"{h}: {c_text}")
+            
+            if row_pairs:
+                # Объединяем пары в одно предложение
+                verbalized_sentence = "; ".join(row_pairs) + "."
+                verbalized_rows.append(verbalized_sentence)
+
+        # Собираем всё вместе
+        md_table_block = "\n".join(md_lines)
+        verbalized_text_block = "\n".join(verbalized_rows)
+
+        # Добавляем в итоговый текст:
+        # 1. Заголовок секции
+        # 2. Markdown таблицу
+        # 3. Явный разделитель и вербализованный текст
+        table_output = (
+            f"\nТаблица {t_idx + 1} (форматирование Markdown):\n"
+            f"{md_table_block}\n\n"
+            f"Детальное описание данных Таблицы {t_idx + 1} (построчно):\n"
+            f"{verbalized_text_block}\n"
+        )
+        parts.append(table_output)
 
     return "\n\n".join(parts)
 
 
 def read_pdf_with_tables(pdf_path: str) -> str:
-    """Считываем PDF, вытаскиваем текст + таблицы в markdown."""
+    """Считываем PDF, вытаскиваем текст + таблицы в markdown с вербализацией."""
     all_parts = []
     with pdfplumber.open(pdf_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
@@ -74,6 +124,7 @@ def split_text_to_chunks(
         end = start + max_chars
         chunk = text[start:end]
         chunks.append(chunk.strip())
+        # Сдвигаем окно, но если дошли до конца - выходим
         start = end - overlap
 
     return [c for c in chunks if c]
@@ -116,9 +167,9 @@ def insert_chunk(
     emb_literal = embedding_to_pgvector_literal(embedding)
 
     insert_sql = sql_text("""
-        INSERT INTO document_chunks
+        INSERT INTO document_chunks 
             (document_id, chunk_index, text, section, paragraph, embedding)
-        VALUES
+        VALUES 
             (:doc_id, :idx, :text, :section, :paragraph, :embedding)
     """)
     with SessionLocal() as db:
@@ -142,11 +193,14 @@ def ingest_pdf(
     if doc_name is None:
         doc_name = os.path.basename(pdf_path)
 
-    print(f"Читаем PDF (текст + таблицы): {pdf_path}")
+    print(f"Читаем PDF (текст + таблицы с вербализацией): {pdf_path}")
     full_text = read_pdf_with_tables(pdf_path)
 
     print(f"Длина текста (с таблицами): {len(full_text)} символов")
-    chunks = split_text_to_chunks(full_text, max_chars=1200, overlap=200)
+    # Примечание: так как мы добавили вербализацию, текст стал больше.
+    # Возможно, стоит немного увеличить max_chars, если строки таблиц очень длинные,
+    # чтобы таблица и её описание не разрывались слишком часто.
+    chunks = split_text_to_chunks(full_text, max_chars=1500, overlap=300)
     print(f"Получилось чанков: {len(chunks)}")
 
     # 1. Запись в documents
@@ -159,7 +213,10 @@ def ingest_pdf(
 
     # 2. Чанки + embeddings
     for i, chunk in enumerate(chunks):
-        print(f"Чанк {i+1}/{len(chunks)} — считаем embedding...")
+        # Простой прогресс-бар в консоль
+        if i % 10 == 0:
+            print(f"Обработка чанка {i+1}/{len(chunks)}...")
+            
         emb = embed_text(chunk)  # text-embedding-3-large
         insert_chunk(
             document_id=doc_id,

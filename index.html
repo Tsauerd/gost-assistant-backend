@@ -34,7 +34,7 @@
             background-color: var(--bg-color);
             color: var(--text-color);
             font-family: 'JetBrains Mono', monospace;
-            background-image:
+            background-image: 
                 linear-gradient(rgba(0, 255, 243, 0.03) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(0, 255, 243, 0.03) 1px, transparent 1px);
             background-size: 30px 30px;
@@ -212,48 +212,84 @@
     </style>
 </head>
 <body>
-
     <div class="container">
         <h1>GOST_AI <span style="font-size:0.5em; vertical-align: super; opacity: 0.7;">v1.0</span></h1>
 
+        <!-- Поле ввода -->
         <div class="input-group">
-            <label for="query">INPUT QUERY / ВВЕДИТЕ ЗАПРОС</label>
-            <textarea id="query" placeholder="Система ожидает ввод... (Например: Рассчитай среднюю плотность по формуле...)"></textarea>
+            <label for="query">Введите запрос</label>
+            <textarea id="query" placeholder="Система ожидает ввод... (Например: Рассчитай среднюю плотность по формуле ГОСТ 5802-2024)"></textarea>
         </div>
 
+        <!-- Тип задачи + кнопка -->
         <div class="controls">
             <div style="flex-grow: 1;">
-                <label for="model" style="margin-bottom: 5px;">PROCESSING UNIT / МОДЕЛЬ</label>
-                <select id="model">
-                    <option value="mini">GPT-4o-mini (Speed / Low Cost)</option>
-                    <option value="pro">GPT-4o (High Precision)</option>
+                <label for="taskType" style="margin-bottom: 5px;">Тип задачи</label>
+                <select id="taskType">
+                    <option value="norm">Нормативное требование (пункты ГОСТ)</option>
+                    <option value="procedure">Процедура испытания</option>
+                    <option value="calculation">Расчёт по формуле</option>
+                    <option value="complaint">Письмо / претензия</option>
                 </select>
             </div>
-            <button id="sendBtn">INITIALIZE SEARCH</button>
+
+            <button id="sendBtn">ИСКАТЬ В ГОСТАХ</button>
         </div>
 
-        <div id="status" class="status">System ready.</div>
+        <!-- Примеры запросов -->
+        <div style="margin-top: 0.7rem; font-size: 0.8rem; color: #777;">
+            Примеры запросов:
+            <ul style="margin-top: 0.3rem; padding-left: 1.2rem;">
+                <li>«Опиши процедуру определения плотности раствора по ГОСТ 5802-2024»</li>
+                <li>«Сколько циклов замораживания нужно для испытания морозостойкости раствора при -30 °C?»</li>
+                <li>«Сформируй таблицу требований по водопоглощению для растворов марок М75 и М100»</li>
+                <li>«Подготовь проект письма-претензии поставщику раствора за несоответствие требованиям ГОСТ»</li>
+            </ul>
+        </div>
 
+        <!-- Статус -->
+        <div id="status" class="status">Система готова.</div>
+
+        <!-- Блок ответа -->
         <div id="resultBox" class="result-box">
-            <span class="badge">RESPONSE</span>
+            <span class="badge">ОТВЕТ</span>
             <div id="result" class="answer-card"></div>
 
             <details style="margin-top: 10px; cursor: pointer;">
-                <summary style="color: #555; font-size: 0.8rem; outline: none;">SHOW SOURCE DATA / ИСТОЧНИКИ</summary>
+                <summary style="color: #555; font-size: 0.8rem; outline: none;">
+                    ПОКАЗАТЬ ИСТОЧНИКИ (ВЫДЕРЖКИ ИЗ ГОСТОВ)
+                </summary>
                 <div id="context" class="context-card" style="margin-top: 10px;"></div>
             </details>
+        </div>
+
+        <!-- Как пользоваться -->
+        <div style="margin-top: 1.5rem; font-size: 0.8rem; color: #666; border-top: 1px dashed #333; padding-top: 0.8rem;">
+            <b>Как пользоваться:</b>
+            <ol style="margin-top: 0.3rem; padding-left: 1.2rem;">
+                <li>Сформулируйте вопрос на русском, как будто спрашиваете эксперта по ГОСТам.</li>
+                <li>При необходимости укажите номер ГОСТа и пункт (например: «по ГОСТ 5802-2024, пункт 12.5.1»).</li>
+                <li>Выберите тип задачи (норма, процедура, расчёт или письмо-претензия).</li>
+                <li>Нажмите «ИСКАТЬ В ГОСТАХ» и дождитесь ответа.</li>
+                <li>Разверните раздел «ПОКАЗАТЬ ИСТОЧНИКИ», чтобы увидеть реальные выдержки из ГОСТов.</li>
+            </ol>
+        </div>
+
+        <!-- Дисклеймер -->
+        <div style="margin-top: 1rem; font-size: 0.78rem; color: #777; border-top: 1px solid #222; padding-top: 0.6rem;">
+            <b>Дисклеймер:</b> сервис носит информационный характер и не заменяет официальные нормативные документы,
+            юридическую или инженерную экспертизу. Ответы, в том числе проекты писем-претензий, следует проверять перед отправкой.
+            Вы используете результаты работы сервиса под свою ответственность.
         </div>
     </div>
 
     <script>
-        // !!! ВНИМАНИЕ !!!
-        // Вставь сюда ссылку, которую ты скопировал с Render (без слэша в конце)
-        // Пример: const backendUrl = "https://gost-assistant-backend-xxxx.onrender.com";
-        const backendUrl = "https://ВАШ_АДРЕС_С_RENDER.onrender.com"; 
+        // URL бекенда на Render
+        const backendUrl = "https://gost-assistant-backend.onrender.com"; 
 
         document.getElementById("sendBtn").addEventListener("click", async () => {
             const query = document.getElementById("query").value.trim();
-            const modelVersion = document.getElementById("model").value;
+            const taskType = document.getElementById("taskType").value;
             const statusEl = document.getElementById("status");
             const resultBox = document.getElementById("resultBox");
             const resultEl = document.getElementById("result");
@@ -261,17 +297,19 @@
             const btn = document.getElementById("sendBtn");
 
             if (!query) {
-                alert("Ошибка ввода: пустой запрос.");
+                alert("Ошибка ввода: запрос пустой.");
                 return;
             }
 
-            statusEl.textContent = "ESTABLISHING UPLINK... [Sending Request]";
+            // UI: загрузка
+            statusEl.textContent = "Поиск по базе ГОСТов и подготовка ответа...";
             statusEl.classList.add("blink");
             resultBox.style.display = "none";
             btn.disabled = true;
-            btn.textContent = "PROCESSING...";
+            btn.textContent = "ОБРАБОТКА...";
 
             try {
+                // Отправляем task_type, на основе которого бек решит, какую модель использовать
                 const response = await fetch(backendUrl + "/chat", {
                     method: "POST",
                     headers: {
@@ -279,8 +317,7 @@
                     },
                     body: JSON.stringify({
                         query: query,
-                        task_type: "question",
-                        model_version: modelVersion
+                        task_type: taskType
                     })
                 });
 
@@ -290,14 +327,15 @@
 
                 const data = await response.json();
 
-                statusEl.textContent = "DATA RECEIVED. RENDERING...";
+                // UI: успех
+                statusEl.textContent = "Ответ получен. Отображаю результат.";
                 statusEl.classList.remove("blink");
 
-                // Обработка ответа (HTML + MathJax)
                 const rawAnswer = data.answer || "Нет ответа от нейросети.";
                 const htmlAnswer = rawAnswer.replace(/\n/g, "<br>");
                 resultEl.innerHTML = htmlAnswer;
-
+                
+                // Рендеринг формул (MathJax)
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     MathJax.typesetPromise([resultEl]).catch(err => console.error(err));
                 }
@@ -309,15 +347,14 @@
                 }
 
                 resultBox.style.display = "block";
-                statusEl.textContent = "COMPLETED. Waiting for next input.";
-
+                statusEl.textContent = "Готово. Можно вводить следующий запрос.";
             } catch (err) {
                 console.error(err);
-                statusEl.textContent = "CONNECTION FAILURE: " + err.message + ". Проверь, работает ли сервер Render (статус Live).";
+                statusEl.textContent = "CONNECTION FAILURE: Failed to fetch. Проверьте, работает ли сервер или попробуйте позже.";
                 statusEl.classList.remove("blink");
             } finally {
                 btn.disabled = false;
-                btn.textContent = "INITIALIZE SEARCH";
+                btn.textContent = "ИСКАТЬ В ГОСТАХ";
             }
         });
     </script>
