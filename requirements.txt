@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+psycopg[binary]
+openai
+python-dotenv
+sqlalchemy
+pgvector
+pdfplumber

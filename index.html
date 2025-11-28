@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ГОСТ AI // NEURAL INTERFACE</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['\\(', '\\)'], ['$', '$']],
+                displayMath: [['\\[', '\\]'], ['$$', '$$']]
+            },
+            svg: { fontCache: 'global' }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #050505;
+            --card-bg: #111116;
+            --accent-color: #00f3ff;
+            --accent-dim: rgba(0, 243, 255, 0.1);
+            --text-color: #e0e0e0;
+            --border-color: #333;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'JetBrains Mono', monospace;
+            background-image:
+                linear-gradient(rgba(0, 255, 243, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 243, 0.03) 1px, transparent 1px);
+            background-size: 30px 30px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            margin: 40px 20px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.7);
+            padding: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .container::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
+            box-shadow: 0 0 10px var(--accent-color);
+        }
+
+        h1 {
+            font-family: 'Orbitron', sans-serif;
+            text-align: center;
+            color: var(--accent-color);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 2rem;
+            text-shadow: 0 0 10px var(--accent-dim);
+        }
+
+        .input-group {
+            margin-bottom: 1.5rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #888;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        textarea {
+            width: 100%;
+            background: #000;
+            border: 1px solid var(--border-color);
+            color: var(--accent-color);
+            font-family: 'JetBrains Mono', monospace;
+            padding: 1rem;
+            border-radius: 6px;
+            min-height: 120px;
+            resize: vertical;
+            transition: 0.3s;
+            box-sizing: border-box;
+            outline: none;
+        }
+
+        textarea:focus {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 15px var(--accent-dim);
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        select {
+            background: #000;
+            color: #fff;
+            border: 1px solid var(--border-color);
+            padding: 0.8rem 1rem;
+            border-radius: 6px;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+        }
+
+        button {
+            background: var(--accent-color);
+            color: #000;
+            border: none;
+            padding: 0.8rem 2rem;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            text-transform: uppercase;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: 0.3s;
+            letter-spacing: 1px;
+        }
+
+        button:hover {
+            background: #fff;
+            box-shadow: 0 0 15px var(--accent-color);
+        }
+
+        button:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .status {
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            color: #666;
+            min-height: 1.2em;
+        }
+
+        .status.blink {
+            animation: blink 1s infinite;
+            color: var(--accent-color);
+        }
+
+        @keyframes blink {
+            50% { opacity: 0.5; }
+        }
+
+        .result-box {
+            margin-top: 2rem;
+            border-top: 1px dashed #333;
+            padding-top: 2rem;
+            display: none;
+        }
+
+        .answer-card {
+            background: rgba(0, 243, 255, 0.03);
+            border-left: 3px solid var(--accent-color);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            line-height: 1.6;
+            /* Убираем white-space: pre-wrap, так как будем использовать <br> */
+        }
+
+        .context-card {
+            font-size: 0.85rem;
+            color: #888;
+            background: #0a0a0a;
+            padding: 1rem;
+            border: 1px solid #222;
+            border-radius: 6px;
+            white-space: pre-wrap; /* Для контекста оставляем как есть */
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border: 1px solid var(--accent-color);
+            color: var(--accent-color);
+            font-size: 0.7rem;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        /* Исправление цвета формул для темной темы */
+        mjx-container {
+            color: var(--accent-color) !important;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>GOST_AI <span style="font-size:0.5em; vertical-align: super; opacity: 0.7;">v1.0</span></h1>
+
+        <div class="input-group">
+            <label for="query">INPUT QUERY / ВВЕДИТЕ ЗАПРОС</label>
+            <textarea id="query" placeholder="Система ожидает ввод... (Например: Рассчитай среднюю плотность по формуле...)"></textarea>
+        </div>
+
+        <div class="controls">
+            <div style="flex-grow: 1;">
+                <label for="model" style="margin-bottom: 5px;">PROCESSING UNIT / МОДЕЛЬ</label>
+                <select id="model">
+                    <option value="mini">GPT-4o-mini (Speed / Low Cost)</option>
+                    <option value="pro">GPT-4o (High Precision)</option>
+                </select>
+            </div>
+            <button id="sendBtn">INITIALIZE SEARCH</button>
+        </div>
+
+        <div id="status" class="status">System ready.</div>
+
+        <div id="resultBox" class="result-box">
+            <span class="badge">RESPONSE</span>
+            <div id="result" class="answer-card"></div>
+
+            <details style="margin-top: 10px; cursor: pointer;">
+                <summary style="color: #555; font-size: 0.8rem; outline: none;">SHOW SOURCE DATA / ИСТОЧНИКИ</summary>
+                <div id="context" class="context-card" style="margin-top: 10px;"></div>
+            </details>
+        </div>
+    </div>
+
+    <script>
+        const backendUrl = "http://127.0.0.1:8000";
+
+        document.getElementById("sendBtn").addEventListener("click", async () => {
+            const query = document.getElementById("query").value.trim();
+            const modelVersion = document.getElementById("model").value;
+            const statusEl = document.getElementById("status");
+            const resultBox = document.getElementById("resultBox");
+            const resultEl = document.getElementById("result");
+            const contextEl = document.getElementById("context");
+            const btn = document.getElementById("sendBtn");
+
+            if (!query) {
+                alert("Ошибка ввода: пустой запрос.");
+                return;
+            }
+
+            // UI: loading
+            statusEl.textContent = "ESTABLISHING UPLINK... [Sending Request]";
+            statusEl.classList.add("blink");
+            resultBox.style.display = "none";
+            btn.disabled = true;
+            btn.textContent = "PROCESSING...";
+
+            try {
+                const response = await fetch(backendUrl + "/chat", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        task_type: "question",
+                        model_version: modelVersion
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error("SERVER ERROR: " + response.status);
+                }
+
+                const data = await response.json();
+
+                statusEl.textContent = "DATA RECEIVED. RENDERING...";
+                statusEl.classList.remove("blink");
+
+                // --- 2. ОБРАБОТКА ОТВЕТА (HTML + MathJax) ---
+                const rawAnswer = data.answer || "Нет ответа от нейросети.";
+                
+                // Заменяем символы переноса строки \n на тег <br>, чтобы текст не слипался
+                const htmlAnswer = rawAnswer.replace(/\n/g, "<br>");
+                
+                // Вставляем как HTML
+                resultEl.innerHTML = htmlAnswer;
+
+                // Запускаем отрисовку формул MathJax внутри блока resultEl
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    MathJax.typesetPromise([resultEl]).catch(err => console.error(err));
+                }
+                // ---------------------------------------------
+
+                if (data.context_used && data.context_used.length > 0) {
+                    contextEl.textContent = data.context_used.join("\n\n------------------------\n\n");
+                } else {
+                    contextEl.textContent = "База знаний не использовалась или пуста.";
+                }
+
+                resultBox.style.display = "block";
+                statusEl.textContent = "COMPLETED. Waiting for next input.";
+
+            } catch (err) {
+                console.error(err);
+                statusEl.textContent = "CRITICAL FAILURE: " + err.message;
+                statusEl.classList.remove("blink");
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "INITIALIZE SEARCH";
+            }
+        });
+    </script>
+</body>
+</html>
