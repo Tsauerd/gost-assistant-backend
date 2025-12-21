@@ -1,145 +1,226 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sqlalchemy import text as sql_text
-from typing import Optional
+from __future__ import annotations
 
-# Импорты из соседних файлов
-# Предполагается, что эти файлы существуют в структуре проекта
-from .db import SessionLocal
+from typing import Optional, Any, Dict, List
+import traceback
+from decimal import Decimal
+from uuid import UUID
+
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field
+
+from sqlalchemy import text as sql_text
+
+from .db import SessionLocal, ensure_schema
 from .rag import search_chunks
 from .llm import call_llm
 
 app = FastAPI(title="GOST Assistant Backend")
 
-# --- CORS: Разрешаем запросы с любого источника (для тестов) ---
+# Важно:
+# allow_credentials=True + allow_origins=["*"] часто ломает CORS в браузере.
+# Т.к. куки/авторизация тебе тут не нужны — ставим allow_credentials=False.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ---------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     query: str
-    # Нормально по умолчанию считать, что ищем норму/пункт ГОСТ
-    task_type: Optional[str] = "norm"  # norm / procedure / calculation / complaint / letter
-    # model_version убрали, теперь решаем внутри
+    task_type: Optional[str] = "norm"
+    client_id: Optional[str] = None
+
+class RateRequest(BaseModel):
+    # Делаем str, чтобы поддержать и int, и UUID, и т.п.
+    request_id: str
+    rating: int = Field(ge=1, le=5)
+
+@app.on_event("startup")
+def _startup() -> None:
+    # создаст таблицу requests если её нет
+    ensure_schema()
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "gost-assistant-backend"}
 
 def resolve_model_name(task_type: Optional[str]) -> str:
-    """
-    Выбираем модель тихо, без упоминания во фронте.
-    - Для писем/претензий: gpt-4o (более сильная, аналог gpt-4.1 в вашей классификации)
-    - Для всего остального: gpt-4o-mini
-    """
     tt = (task_type or "").lower()
-
-    # Любые варианты, связанные с письмами/претензиями/юридическими вопросами
     if tt in ("complaint", "claim", "letter", "legal", "complaint_letter"):
         return "gpt-4o"
-
-    # Дефолт для поиска норм и простых ответов
     return "gpt-4o-mini"
 
+def _coerce_request_id(value: Any) -> Any:
+    """
+    Возвращаем request_id в сериализуемом виде.
+    - int -> int
+    - uuid.UUID -> str
+    - Decimal -> float
+    - None -> None
+    """
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
 @app.post("/chat")
-async def chat_endpoint(request: ChatRequest):
-    user_query = request.query
-    
-    # 1. RAG: Ищем больше кусков (top_k=6), чтобы захватить таблицы целиком
-    chunks = search_chunks(user_query, top_k=6)
+async def chat_endpoint(request_body: ChatRequest, request: Request):
+    user_query = (request_body.query or "").strip()
+    if not user_query:
+        raise HTTPException(status_code=400, detail="Empty query")
 
-    context_text = "\n\n".join([f"Отрывок: {row.text}" for row in chunks])
-    if not context_text.strip():
-        context_text = "Нет конкретной информации в базе знаний."
+    task_type = (request_body.task_type or "norm").lower()
+    client_id = request_body.client_id
+    user_agent = request.headers.get("user-agent", "")
+    model_name = resolve_model_name(task_type)
 
-    # 2. Формируем строгий системный промпт
+    # 1) СНАЧАЛА создаём запись в БД -> получаем request_id
+    request_id = None
+    db_error = None
+
+    try:
+        with SessionLocal() as db:
+            insert_q = sql_text("""
+                INSERT INTO requests (query_text, task_type, model_used, client_id, user_agent, status)
+                VALUES (:q, :tt, :m, :cid, :ua, 'pending')
+                RETURNING id
+            """)
+            res = db.execute(insert_q, {
+                "q": user_query,
+                "tt": task_type,
+                "m": model_name,
+                "cid": client_id,
+                "ua": user_agent,
+            })
+            request_id = res.scalar()
+            db.commit()
+    except Exception as e:
+        db_error = f"{type(e).__name__}: {e}"
+        print("[DB] insert failed:", db_error)
+
+    # 2) RAG
+    try:
+        chunks = search_chunks(user_query, top_k=6)
+    except Exception as e:
+        chunks = []
+        print("[RAG] search_chunks failed:", e)
+
+    context_text = "\n\n".join([f"Отрывок:\n{row.text}" for row in chunks]) or "Нет конкретной информации в базе знаний."
+
+    # 3) Prompt
     full_prompt = f"""
-Ты — профессиональный технический эксперт и юрист, специализирующийся на стандартах ГОСТ, СНиП и работе с рекламациями.
+Ты — профессиональный технический эксперт по стандартам ГОСТ/СП/СНиП.
 
-Твои задачи:
-1. Давать точные ответы по нормативам.
-2. Помогать составлять юридически грамотные тексты претензий, актов или ответов на жалобы.
+Правила:
+1) Отвечай строго по контексту. Если данных нет — так и скажи.
+2) Если есть таблицы/формулы — сохраняй структуру.
+3) Числа и условия перепроверяй.
 
-Инструкции по работе с контекстом:
-1. Отвечай СТРОГО на основе приведённого ниже контекста. Не придумывай нормы, которых нет в базе.
-2. ТАБЛИЦЫ: Если в контексте есть таблицы (Markdown), обязательно учитывай их. Если данные в таблице точнее текста — таблица в приоритете.
-3. ЧИСЛА И УСЛОВИЯ: Внимательно проверяй условия (температуру, размеры, марки). Если в вопросе есть условия (например, "при -30 градусах"), ищи соответствующее значение в таблицах.
-
-Инструкции по стилю (если вопрос подразумевает составление документа):
-1. Используй официально-деловой стиль.
-2. Структурируй ответ:
-   - **Нормативное обоснование**: Цитата конкретного пункта ГОСТ (с номером пункта/таблицы).
-   - **Анализ ситуации**: Сравнение требований ГОСТ с ситуацией пользователя.
-   - **Вывод/Рекомендация**: Четкое заключение (соответствует/не соответствует).
-3. При составлении претензии используй формулировки: "Согласно п. X ГОСТ Y...", "На основании вышеизложенного требуем...", "Отклонение от нормы составляет...".
-
-Форматирование:
-- Используй жирный шрифт для выделения ключевых выводов и номеров пунктов.
-- Формулы пиши в LaTeX ($$ ... $$).
-- Таблицы выводи в Markdown.
-
-Контекст из базы знаний:
+Контекст:
 {context_text}
 
 Запрос пользователя:
 {user_query}
-    """
+""".strip()
 
-    # 3. Выбираем модель на основе типа задачи (тихо)
-    model_name = resolve_model_name(request.task_type)
-    answer, usage = call_llm(full_prompt, model=model_name)
+    # 4) LLM
+    answer = "Нет ответа."
+    usage = None
+    llm_error = None
 
-    # 4. Безопасный подсчет токенов и стоимости
-    tokens_in = 0
-    tokens_out = 0
+    try:
+        answer, usage = call_llm(full_prompt, model=model_name)
+    except Exception as e:
+        llm_error = f"{type(e).__name__}: {e}"
+        print("[LLM] call failed:", llm_error)
+        answer = "Ошибка генерации ответа. Попробуйте позже."
 
-    if usage:
-        # Проверяем атрибуты, так как разные версии либы могут называть их по-разному
-        tokens_in = getattr(usage, "prompt_tokens", 0)
-        tokens_out = getattr(usage, "completion_tokens", 0)
+    tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+    tokens_out = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
 
-    # Примерные цены (на текущий момент):
-    # gpt-4o-mini: ~$0.15 вход / $0.60 выход за 1М токенов
-    # gpt-4o:      ~$2.50 вход / $10.00 выход за 1М токенов
+    # Условный расчёт стоимости
     if "mini" in model_name:
         in_price = 0.15
         out_price = 0.60
     else:
-        # Цены для "большой" модели
         in_price = 2.50
         out_price = 10.00
-
     cost = (tokens_in * in_price + tokens_out * out_price) / 1_000_000
 
-    # 5. Логируем запрос в базу (таблица requests)
-    # Обрати внимание: сохраняем request.task_type, а не версию модели из запроса (ее больше нет)
-    log_query = sql_text("""
-        INSERT INTO requests (query_text, task_type, model_used, tokens_in, tokens_out, cost_usd, status)
-        VALUES (:q, :tt, :m, :ti, :to, :c, 'success')
-    """)
+    # 5) Обновляем запись в БД
+    if request_id is not None:
+        try:
+            with SessionLocal() as db:
+                upd_q = sql_text("""
+                    UPDATE requests
+                    SET status = :st,
+                        answer_text = :ans,
+                        tokens_in = :ti,
+                        tokens_out = :to,
+                        cost_usd = :c,
+                        model_used = :m,
+                        error_text = :err
+                    WHERE id = :id
+                """)
+                db.execute(upd_q, {
+                    "st": "success" if llm_error is None else "error",
+                    "ans": answer,
+                    "ti": tokens_in,
+                    "to": tokens_out,
+                    "c": cost,
+                    "m": model_name,
+                    "err": llm_error,
+                    "id": request_id,
+                })
+                db.commit()
+        except Exception as e:
+            print("[DB] update failed:", e)
+
+    payload = {
+        "answer": answer,
+        "model_used": model_name,
+        "context_used": [row.text for row in chunks],
+        "request_id": _coerce_request_id(request_id),  # <-- ключевой фикс
+        "db_error": db_error,                          # <-- чтобы видеть в F12 почему request_id null
+    }
+
+    # Гарантируем корректную сериализацию (UUID/Decimal и т.п.)
+    return JSONResponse(content=jsonable_encoder(payload))
+
+@app.post("/rate")
+async def rate_endpoint(body: RateRequest):
+    # Пробуем привести к int (если у тебя serial id)
+    rid: Any = body.request_id
+    if isinstance(rid, str) and rid.isdigit():
+        rid = int(rid)
 
     try:
         with SessionLocal() as db:
-            db.execute(log_query, {
-                "q": user_query,
-                "tt": request.task_type,
-                "m": model_name,
-                "ti": tokens_in,
-                "to": tokens_out,
-                "c": cost
-            })
+            res = db.execute(
+                sql_text("""
+                    UPDATE requests
+                    SET rating = :r, rating_created_at = now()
+                    WHERE id = :id
+                """),
+                {"r": body.rating, "id": rid}
+            )
             db.commit()
-    except Exception as e:
-        print(f"Ошибка логирования в БД: {e}")
 
-    return {
-        "answer": answer,
-        "model_used": model_name, # Для отладки можно оставить, но фронт может это игнорировать
-        "context_used": [row.text for row in chunks]
-    }
+            if res.rowcount == 0:
+                raise HTTPException(status_code=404, detail="request_id not found")
+
+        return {"ok": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("[DB] rate failed:", e)
+        raise HTTPException(status_code=500, detail="Internal DB error")

@@ -18,20 +18,24 @@
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 
+    <!-- Markdown → HTML (библиотека marked) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
     <style>
         :root {
-            --bg-color: #050505;
-            --card-bg: #111116;
-            --accent-color: #00f3ff;
-            --accent-dim: rgba(0, 243, 255, 0.1);
-            --text-color: #e0e0e0;
-            --border-color: #333;
+            --bg-color: #050812;              /* тёмно-синий, а не чистый чёрный */
+            --card-bg: #151821;               /* фон карточки чуть светлее */
+            --accent-color: #00f3ff;          /* неоновый циан */
+            --accent-dim: rgba(0, 243, 255, 0.16);
+            --text-color: #f2f4ff;            /* почти белый, но мягкий */
+            --muted-text: #9ca5c0;
+            --border-color: #262b3a;
         }
 
         body {
             margin: 0;
             padding: 0;
-            background-color: var(--bg-color);
+            background: radial-gradient(circle at top, #10162a 0%, #050812 55%, #020309 100%);
             color: var(--text-color);
             font-family: 'JetBrains Mono', monospace;
             background-image: 
@@ -46,13 +50,15 @@
 
         .container {
             width: 100%;
-            max-width: 900px;
+            max-width: 980px;
             margin: 40px 20px;
-            background: var(--card-bg);
+            background: radial-gradient(circle at top left, #1f2535 0%, #141824 45%, #10131d 100%);
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            box-shadow: 0 0 20px rgba(0, 0, 0, 0.7);
-            padding: 2rem;
+            border-radius: 18px;
+            box-shadow: 
+                0 18px 40px rgba(0, 0, 0, 0.85),
+                0 0 25px rgba(0, 243, 255, 0.08);
+            padding: 2.2rem;
             position: relative;
             overflow: hidden;
         }
@@ -63,9 +69,9 @@
             top: 0;
             left: 0;
             width: 100%;
-            height: 4px;
+            height: 3px;
             background: linear-gradient(90deg, transparent, var(--accent-color), transparent);
-            box-shadow: 0 0 10px var(--accent-color);
+            box-shadow: 0 0 18px var(--accent-color);
         }
 
         h1 {
@@ -73,19 +79,19 @@
             text-align: center;
             color: var(--accent-color);
             text-transform: uppercase;
-            letter-spacing: 2px;
-            margin-bottom: 2rem;
-            text-shadow: 0 0 10px var(--accent-dim);
+            letter-spacing: 3px;
+            margin-bottom: 2.2rem;
+            text-shadow: 0 0 16px var(--accent-dim);
         }
 
         .input-group {
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.4rem;
         }
 
         label {
             display: block;
-            margin-bottom: 0.5rem;
-            color: #888;
+            margin-bottom: 0.45rem;
+            color: var(--muted-text);
             font-size: 0.9rem;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -93,72 +99,88 @@
 
         textarea {
             width: 100%;
-            background: #000;
-            border: 1px solid var(--border-color);
+            background: #050711;
+            border: 1px solid #30364a;
             color: var(--accent-color);
             font-family: 'JetBrains Mono', monospace;
             padding: 1rem;
-            border-radius: 6px;
-            min-height: 120px;
+            border-radius: 10px;
+            min-height: 130px;
             resize: vertical;
-            transition: 0.3s;
+            transition: 0.25s;
             box-sizing: border-box;
             outline: none;
+        }
+        
+        textarea::placeholder {
+            color: #4f5a78;
         }
 
         textarea:focus {
             border-color: var(--accent-color);
-            box-shadow: 0 0 15px var(--accent-dim);
+            box-shadow: 0 0 18px var(--accent-dim);
+            background: #050815;
         }
 
         .controls {
             display: flex;
             gap: 1rem;
-            align-items: center;
+            align-items: flex-end;
             flex-wrap: wrap;
         }
 
         select {
-            background: #000;
-            color: #fff;
-            border: 1px solid var(--border-color);
-            padding: 0.8rem 1rem;
-            border-radius: 6px;
+            background: #050711;
+            color: var(--text-color);
+            border: 1px solid #30364a;
+            padding: 0.75rem 1rem;
+            border-radius: 10px;
             font-family: inherit;
             cursor: pointer;
             outline: none;
+            font-size: 0.9rem;
+            min-width: 260px;
+            transition: 0.2s;
         }
 
-        button {
+        select:focus {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 14px var(--accent-dim);
+        }
+
+        button#sendBtn {
             background: var(--accent-color);
-            color: #000;
+            color: #001014;
             border: none;
-            padding: 0.8rem 2rem;
+            padding: 0.9rem 2.4rem;
             font-family: 'Orbitron', sans-serif;
             font-weight: 700;
             text-transform: uppercase;
             cursor: pointer;
-            border-radius: 4px;
-            transition: 0.3s;
+            border-radius: 999px;
+            transition: 0.22s;
             letter-spacing: 1px;
+            box-shadow: 0 0 12px rgba(0, 243, 255, 0.6);
         }
 
-        button:hover {
+        button#sendBtn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 0 18px rgba(0, 243, 255, 0.9);
             background: #fff;
-            box-shadow: 0 0 15px var(--accent-color);
         }
 
-        button:disabled {
-            background: #333;
-            color: #666;
+        button#sendBtn:disabled {
+            background: #2c3343;
+            color: #767f96;
             cursor: not-allowed;
             box-shadow: none;
+            transform: none;
         }
 
         .status {
             margin-top: 1rem;
-            font-size: 0.9rem;
-            color: #666;
+            font-size: 0.85rem;
+            color: var(--muted-text);
             min-height: 1.2em;
         }
 
@@ -173,27 +195,79 @@
 
         .result-box {
             margin-top: 2rem;
-            border-top: 1px dashed #333;
-            padding-top: 2rem;
-            display: none;
+            border-top: 1px dashed #31364a;
+            padding-top: 1.6rem;
+            display: none; /* скрыт по умолчанию */
         }
 
         .answer-card {
-            background: rgba(0, 243, 255, 0.03);
+            background: rgba(5, 8, 20, 0.9);
             border-left: 3px solid var(--accent-color);
-            padding: 1.5rem;
-            margin-bottom: 1rem;
+            padding: 1.4rem 1.5rem;
+            margin-bottom: 1.1rem;
+            white-space: normal;
             line-height: 1.6;
+            border-radius: 8px;
+            overflow-x: auto;
         }
 
+        /* --- Стили для таблиц внутри ответа --- */
+        .answer-card table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .answer-card th, .answer-card td {
+            border: 1px solid #333;
+            padding: 6px 10px;
+            text-align: left;
+        }
+
+        .answer-card th {
+            background: rgba(0, 243, 255, 0.08);
+            font-weight: 600;
+            color: var(--accent-color);
+        }
+
+        .answer-card tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        /* ------------------------------------- */
+
         .context-card {
-            font-size: 0.85rem;
-            color: #888;
-            background: #0a0a0a;
+            font-size: 0.82rem;
+            color: var(--muted-text);
+            background: #0b0f1c;
             padding: 1rem;
-            border: 1px solid #222;
-            border-radius: 6px;
-            white-space: pre-wrap;
+            border: 1px solid #262b3a;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+        
+        /* Стили для таблиц в источниках */
+        .context-card table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+        }
+        
+        .context-card th, .context-card td {
+            border: 1px solid #333;
+            padding: 3px 5px;
+            text-align: left;
+        }
+        
+        .context-card th {
+            background: rgba(0, 243, 255, 0.08);
+            font-weight: 600;
+        }
+        
+        .context-card tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
         }
 
         .badge {
@@ -205,20 +279,96 @@
             border-radius: 4px;
             margin-bottom: 10px;
         }
+
+        /* --- НОВЫЙ БЛОК РЕЙТИНГА --- */
+        .hidden { display: none !important; }
+
+        .rating {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px dashed rgba(48, 54, 74, 0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .rating-title {
+            font-size: 0.85rem;
+            color: var(--muted-text);
+            opacity: 0.9;
+        }
+
+        .rating-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .rating-btn {
+            min-width: 42px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(0, 243, 255, 0.3);
+            background: rgba(0, 243, 255, 0.05);
+            color: var(--accent-color);
+            cursor: pointer;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: bold;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+        }
+
+        .rating-btn:hover {
+            background: rgba(0, 243, 255, 0.2);
+            box-shadow: 0 0 10px var(--accent-dim);
+            transform: translateY(-2px);
+        }
+
+        .rating-btn:active {
+            transform: translateY(0);
+        }
+
+        .rating-btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            border-color: #444;
+            background: #222;
+            color: #777;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .rating-status {
+            font-size: 0.85rem;
+            color: var(--muted-text);
+            min-height: 1.2em;
+        }
+        /* ------------------------------- */
         
         mjx-container {
             color: var(--accent-color) !important;
+        }
+
+        .input-disclaimer {
+            font-size: 0.7rem;
+            color: #5c637a;
+            margin-top: 6px;
+            font-style: italic;
+            text-align: right;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>GOST_AI <span style="font-size:0.5em; vertical-align: super; opacity: 0.7;">v1.0</span></h1>
+        <h1>GOST_AI <span style="font-size:0.5em; vertical-align: super; opacity: 0.7;">v1.1</span></h1>
 
         <!-- Поле ввода -->
         <div class="input-group">
             <label for="query">Введите запрос</label>
             <textarea id="query" placeholder="Система ожидает ввод... (Например: Рассчитай среднюю плотность по формуле ГОСТ 5802-2024)"></textarea>
+            <!-- Дисклеймер об аналитике -->
+            <div class="input-disclaimer">
+                Внимание: ваши запросы могут сохраняться и использоваться в обезличенном виде для анализа и улучшения сервиса.
+            </div>
         </div>
 
         <!-- Тип задачи + кнопка -->
@@ -255,7 +405,21 @@
             <span class="badge">ОТВЕТ</span>
             <div id="result" class="answer-card"></div>
 
-            <details style="margin-top: 10px; cursor: pointer;">
+            <!-- БЛОК РЕЙТИНГА -->
+            <div id="ratingBlock" class="rating hidden">
+                <div class="rating-title">ОЦЕНИТЕ КАЧЕСТВО ОТВЕТА:</div>
+                <div class="rating-buttons">
+                    <button class="rating-btn" data-rating="1">1</button>
+                    <button class="rating-btn" data-rating="2">2</button>
+                    <button class="rating-btn" data-rating="3">3</button>
+                    <button class="rating-btn" data-rating="4">4</button>
+                    <button class="rating-btn" data-rating="5">5</button>
+                </div>
+                <div id="ratingStatus" class="rating-status"></div>
+            </div>
+            <!-- -->
+
+            <details style="margin-top: 15px; cursor: pointer;">
                 <summary style="color: #555; font-size: 0.8rem; outline: none;">
                     ПОКАЗАТЬ ИСТОЧНИКИ (ВЫДЕРЖКИ ИЗ ГОСТОВ)
                 </summary>
@@ -275,7 +439,7 @@
             </ol>
         </div>
 
-        <!-- Дисклеймер -->
+        <!-- Дисклеймер юридический -->
         <div style="margin-top: 1rem; font-size: 0.78rem; color: #777; border-top: 1px solid #222; padding-top: 0.6rem;">
             <b>Дисклеймер:</b> сервис носит информационный характер и не заменяет официальные нормативные документы,
             юридическую или инженерную экспертизу. Ответы, в том числе проекты писем-претензий, следует проверять перед отправкой.
@@ -286,6 +450,34 @@
     <script>
         // URL бекенда на Render
         const backendUrl = "https://gost-assistant-backend.onrender.com"; 
+        
+        // Глобальная переменная для хранения ID последнего запроса
+        let lastRequestId = null;
+
+        // --- ГЕНЕРАЦИЯ CLIENT ID ---
+        let clientId = localStorage.getItem("gost_ai_client_id");
+        if (!clientId) {
+            if (window.crypto && crypto.randomUUID) {
+                clientId = crypto.randomUUID();
+            } else {
+                clientId = "client_" + Math.random().toString(36).substring(2);
+            }
+            localStorage.setItem("gost_ai_client_id", clientId);
+        }
+        console.log("Client ID:", clientId);
+        // ---------------------------
+
+        function normalizeMarkdownTables(text) {
+            if (!text) return "";
+            return text.replace(/([^\n])\n\|/g, '$1\n\n|');
+        }
+
+        // Функция управления кнопками рейтинга
+        function enableRatingButtons(enabled) {
+            document.querySelectorAll(".rating-btn").forEach(btn => {
+                btn.disabled = !enabled;
+            });
+        }
 
         document.getElementById("sendBtn").addEventListener("click", async () => {
             const query = document.getElementById("query").value.trim();
@@ -295,6 +487,9 @@
             const resultEl = document.getElementById("result");
             const contextEl = document.getElementById("context");
             const btn = document.getElementById("sendBtn");
+            
+            const ratingBlock = document.getElementById("ratingBlock");
+            const ratingStatus = document.getElementById("ratingStatus");
 
             if (!query) {
                 alert("Ошибка ввода: запрос пустой.");
@@ -305,11 +500,15 @@
             statusEl.textContent = "Поиск по базе ГОСТов и подготовка ответа...";
             statusEl.classList.add("blink");
             resultBox.style.display = "none";
+            ratingBlock.classList.add("hidden"); // Скрываем рейтинг при новом запросе
             btn.disabled = true;
             btn.textContent = "ОБРАБОТКА...";
 
+            lastRequestId = null;
+            ratingStatus.textContent = "";
+
             try {
-                // Отправляем task_type, на основе которого бек решит, какую модель использовать
+                // Отправляем запрос на бекенд
                 const response = await fetch(backendUrl + "/chat", {
                     method: "POST",
                     headers: {
@@ -317,7 +516,8 @@
                     },
                     body: JSON.stringify({
                         query: query,
-                        task_type: taskType
+                        task_type: taskType,
+                        client_id: clientId
                     })
                 });
 
@@ -332,21 +532,44 @@
                 statusEl.classList.remove("blink");
 
                 const rawAnswer = data.answer || "Нет ответа от нейросети.";
-                const htmlAnswer = rawAnswer.replace(/\n/g, "<br>");
+                
+                // Сохраняем request_id из ответа для рейтинга
+                lastRequestId = data.request_id ?? data.requestId ?? null;
+
+                // --- РЕНДЕРИНГ MARKDOWN ---
+                const htmlAnswer = marked.parse(rawAnswer);
                 resultEl.innerHTML = htmlAnswer;
                 
-                // Рендеринг формул (MathJax)
                 if (window.MathJax && window.MathJax.typesetPromise) {
                     MathJax.typesetPromise([resultEl]).catch(err => console.error(err));
                 }
 
+                // --- РЕНДЕРИНГ ИСТОЧНИКОВ (Context) ---
                 if (data.context_used && data.context_used.length > 0) {
-                    contextEl.textContent = data.context_used.join("\n\n------------------------\n\n");
+                    const rawContext = data.context_used.join("\n\n------------------------\n\n");
+                    const normalizedContext = normalizeMarkdownTables(rawContext);
+                    const htmlContext = marked.parse(normalizedContext);
+                    contextEl.innerHTML = htmlContext;
+                    if (window.MathJax && window.MathJax.typesetPromise) {
+                        MathJax.typesetPromise([contextEl]).catch(err => console.error(err));
+                    }
                 } else {
                     contextEl.textContent = "База знаний не использовалась или пуста.";
                 }
 
+                // Показываем результат
                 resultBox.style.display = "block";
+                
+                // --- ЛОГИКА РЕЙТИНГА ---
+                ratingBlock.classList.remove("hidden");
+                if (lastRequestId) {
+                    ratingStatus.textContent = "";
+                    enableRatingButtons(true);
+                } else {
+                    ratingStatus.textContent = "Рейтинг недоступен (нет ID запроса).";
+                    enableRatingButtons(false);
+                }
+
                 statusEl.textContent = "Готово. Можно вводить следующий запрос.";
             } catch (err) {
                 console.error(err);
@@ -356,6 +579,36 @@
                 btn.disabled = false;
                 btn.textContent = "ИСКАТЬ В ГОСТАХ";
             }
+        });
+
+        // --- Обработчик клика по кнопкам рейтинга ---
+        document.querySelectorAll(".rating-btn").forEach(btn => {
+            btn.addEventListener("click", async () => {
+                const rating = Number(btn.dataset.rating);
+                if (!lastRequestId) return;
+
+                const ratingStatus = document.getElementById("ratingStatus");
+                
+                // Сразу блокируем, чтобы не нажимали дважды
+                enableRatingButtons(false);
+                ratingStatus.textContent = "Отправка оценки...";
+
+                try {
+                    const res = await fetch(`${backendUrl}/rate`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ request_id: lastRequestId, rating })
+                    });
+
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                    ratingStatus.textContent = `Спасибо! Оценка принята: ${rating}/5`;
+                } catch (e) {
+                    console.error(e);
+                    ratingStatus.textContent = "Ошибка при отправке. Попробуйте позже.";
+                    // Можно разблокировать, если хотим дать второй шанс, но часто лучше оставить как есть
+                }
+            });
         });
     </script>
 </body>

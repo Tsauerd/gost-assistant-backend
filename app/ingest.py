@@ -1,4 +1,6 @@
+# ingest.py
 import os
+import re
 import argparse
 from typing import List
 
@@ -6,9 +8,8 @@ import pdfplumber
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text
 
-# Предполагается, что эти модули существуют в вашем проекте
 from .db import SessionLocal
-from .rag import embed_text  # используем нашу обновлённую функцию
+from .rag import embed_text  # используем общую функцию эмбеддинга
 
 load_dotenv()
 
@@ -23,8 +24,8 @@ def clean_cell_text(text: str) -> str:
 def page_to_markdown(page) -> str:
     """
     Достаём текст + таблицы с одной страницы.
-    Таблицы преобразуем в Markdown И добавляем их вербализацию (текстовое описание)
-    для улучшения семантического поиска.
+    Таблицы преобразуем в Markdown и добавляем их вербализацию
+    (текстовое описание) для улучшения семантического поиска.
     """
     parts = []
 
@@ -38,57 +39,40 @@ def page_to_markdown(page) -> str:
     for t_idx, table in enumerate(tables or []):
         if not table:
             continue
-        
-        # Первая строка — заголовок
+
         header_raw = table[0]
         rows = table[1:] if len(table) > 1 else []
 
-        # Очищаем заголовки для использования в вербализации
-        # (Header: Value) работает лучше, чем сырой markdown
         clean_headers = [clean_cell_text(h) for h in header_raw]
 
-        # --- Блок 1: Markdown представление (для визуального чтения LLM) ---
+        # --- Markdown представление (для визуального чтения LLM) ---
         md_lines = []
-        # Заголовок
         md_header = "| " + " | ".join(cell or "" for cell in header_raw) + " |"
         md_sep = "| " + " | ".join("---" for _ in header_raw) + " |"
         md_lines.append(md_header)
         md_lines.append(md_sep)
 
-        # --- Блок 2: Вербализация (для embedding поиска) ---
-        # Формируем список предложений, описывающих каждую строку.
-        # Пример: "Температура, °C: ниже минус 30; Время оттаивания, ч: 5."
+        # --- Вербализация (для embedding-поиска) ---
         verbalized_rows = []
 
         for row in rows:
-            # Добавляем строку в Markdown
-            # Заменяем None на пустую строку
-            clean_row_md = [cell if cell else "" for cell in row] 
+            clean_row_md = [cell if cell else "" for cell in row]
             line_md = "| " + " | ".join(clean_row_md) + " |"
             md_lines.append(line_md)
 
-            # Формируем вербализацию строки
-            # Собираем пары "Заголовок: Значение"
-            # Пропускаем пустые ячейки, чтобы не создавать мусор
             row_pairs = []
             for h, cell in zip(clean_headers, row):
                 c_text = clean_cell_text(cell)
                 if h and c_text:
                     row_pairs.append(f"{h}: {c_text}")
-            
+
             if row_pairs:
-                # Объединяем пары в одно предложение
                 verbalized_sentence = "; ".join(row_pairs) + "."
                 verbalized_rows.append(verbalized_sentence)
 
-        # Собираем всё вместе
         md_table_block = "\n".join(md_lines)
         verbalized_text_block = "\n".join(verbalized_rows)
 
-        # Добавляем в итоговый текст:
-        # 1. Заголовок секции
-        # 2. Markdown таблицу
-        # 3. Явный разделитель и вербализованный текст
         table_output = (
             f"\nТаблица {t_idx + 1} (форматирование Markdown):\n"
             f"{md_table_block}\n\n"
@@ -113,25 +97,76 @@ def read_pdf_with_tables(pdf_path: str) -> str:
 
 def split_text_to_chunks(
     text: str,
-    max_chars: int = 1200,
-    overlap: int = 200
+    max_chars: int = 2000,
+    overlap: int = 0,  # оставлен для совместимости, но не используется
 ) -> List[str]:
-    chunks = []
-    start = 0
-    length = len(text)
+    """
+    Разбиваем по абзацам (двойной перенос строки), а не по голым символам.
+    Это уменьшает вероятность разрыва пунктов и таблиц.
+    """
+    # Разбиваем на "блоки" по пустым строкам
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
 
-    while start < length:
-        end = start + max_chars
-        chunk = text[start:end]
-        chunks.append(chunk.strip())
-        # Сдвигаем окно, но если дошли до конца - выходим
-        start = end - overlap
+    chunks: List[str] = []
+    current = ""
 
-    return [c for c in chunks if c]
+    for block in blocks:
+        candidate = (current + "\n\n" + block).strip() if current else block
+
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            # Текущий кусок уже достаточно большой — отправляем его в чанки
+            if current:
+                chunks.append(current)
+            # Если один блок сам по себе слишком длинный — режем его грубо
+            if len(block) <= max_chars:
+                current = block
+            else:
+                start = 0
+                while start < len(block):
+                    end = start + max_chars
+                    chunks.append(block[start:end].strip())
+                    start = end
+                current = ""
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 def embedding_to_pgvector_literal(embedding: List[float]) -> str:
-    return "[" + ",".join(str(round(x, 6)) for x in embedding) + "]"
+    return "[" + ",".join(f"{x:.6f}" for x in embedding) + "]"
+
+
+def extract_section_paragraph(chunk_text: str):
+    """
+    Пытаемся вытащить:
+    - section: номер раздела (например, '5')
+    - paragraph: номер пункта (например, '5.2.1')
+    Всё эвристически, но для ГОСТов обычно работает.
+    """
+    section = None
+    paragraph = None
+
+    lines = [l.strip() for l in chunk_text.splitlines() if l.strip()]
+    if not lines:
+        return section, paragraph
+
+    full_text = "\n".join(lines)
+
+    # Ищем пункт вида 5.2 или 5.2.1 и т.п. в начале строки
+    para_match = re.search(r"^(\d+(?:\.\d+){1,3})\s", full_text, re.MULTILINE)
+    if para_match:
+        paragraph = para_match.group(1)
+
+    # Ищем раздел в первой строке: "5 Методы контроля"
+    sec_match = re.search(r"^(\d{1,2})\s+[А-ЯЁA-Z]", lines[0])
+    if sec_match:
+        section = sec_match.group(1)
+
+    return section, paragraph
 
 
 def insert_document(
@@ -197,10 +232,8 @@ def ingest_pdf(
     full_text = read_pdf_with_tables(pdf_path)
 
     print(f"Длина текста (с таблицами): {len(full_text)} символов")
-    # Примечание: так как мы добавили вербализацию, текст стал больше.
-    # Возможно, стоит немного увеличить max_chars, если строки таблиц очень длинные,
-    # чтобы таблица и её описание не разрывались слишком часто.
-    chunks = split_text_to_chunks(full_text, max_chars=1500, overlap=300)
+
+    chunks = split_text_to_chunks(full_text, max_chars=2000)
     print(f"Получилось чанков: {len(chunks)}")
 
     # 1. Запись в documents
@@ -212,17 +245,33 @@ def ingest_pdf(
     print(f"Создан documents.id = {doc_id}")
 
     # 2. Чанки + embeddings
-    for i, chunk in enumerate(chunks):
-        # Простой прогресс-бар в консоль
+    for i, raw_chunk in enumerate(chunks):
         if i % 10 == 0:
             print(f"Обработка чанка {i+1}/{len(chunks)}...")
-            
-        emb = embed_text(chunk)  # text-embedding-3-large
+
+        # Вытащим раздел/пункт (эвристически)
+        section, paragraph = extract_section_paragraph(raw_chunk)
+
+        # Добавим шапку, чтобы в самом тексте был ГОСТ/раздел/пункт
+        header_parts = [f"ГОСТ {standard_number}"]
+        if year:
+            header_parts.append(str(year))
+        if section:
+            header_parts.append(f"Раздел {section}")
+        if paragraph:
+            header_parts.append(f"Пункт {paragraph}")
+
+        header = " | ".join(header_parts)
+        chunk_text = f"[{header}]\n{raw_chunk}"
+
+        emb = embed_text(chunk_text)  # text-embedding-3-large
         insert_chunk(
             document_id=doc_id,
             chunk_index=i,
-            chunk_text=chunk,
-            embedding=emb
+            chunk_text=chunk_text,
+            embedding=emb,
+            section=section,
+            paragraph=paragraph
         )
 
     print("Готово: документ и все чанки загружены.")
