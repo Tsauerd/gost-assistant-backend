@@ -6,12 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text as sql_text
 from typing import Optional
 
-# Твои существующие импорты
 from .db import SessionLocal
 from .rag import search_chunks
 from .llm import call_llm
 
-# 1. ДОБАВЛЯЕМ ИМПОРТ БОТА
 from .telegram_bot import setup_telegram
 
 app = FastAPI(title="GOST Assistant Backend")
@@ -53,7 +51,7 @@ async def chat_endpoint(body: ChatRequest, request: Request):
     client_id = body.client_id
     user_agent = request.headers.get("user-agent", "")
 
-    request_id = Nonea
+    request_id = None
     db_error = None
     try:
         with SessionLocal() as db:
@@ -175,5 +173,5 @@ async def rate_endpoint(body: RateRequest):
 
     return {"ok": True}
 
-# 2. ИНИЦИАЛИЗИРУЕМ ТЕЛЕГРАМ БОТА В САМОМ КОНЦЕ
+# Инициализируем Telegram webhook (после всех роутов)
 setup_telegram(app)
