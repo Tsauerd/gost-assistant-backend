@@ -13,7 +13,7 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Для Neon SSL обязателен
+# Neon почти всегда требует SSL
 engine = create_engine(
     DATABASE_URL,
     connect_args={"sslmode": "require"},
