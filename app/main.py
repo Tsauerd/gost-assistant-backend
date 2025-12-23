@@ -6,9 +6,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text as sql_text
 from typing import Optional
 
+# Твои существующие импорты
 from .db import SessionLocal
 from .rag import search_chunks
 from .llm import call_llm
+
+# 1. ДОБАВЛЯЕМ ИМПОРТ БОТА
+from .telegram_bot import setup_telegram
 
 app = FastAPI(title="GOST Assistant Backend")
 
@@ -20,29 +24,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 class ChatRequest(BaseModel):
     query: str
     task_type: Optional[str] = "norm"
     client_id: Optional[str] = None
 
-
 class RateRequest(BaseModel):
     request_id: int
     rating: int = Field(ge=1, le=5)
 
-
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "gost-assistant-backend"}
-
 
 def resolve_model_name(task_type: Optional[str]) -> str:
     tt = (task_type or "").lower()
     if tt in ("complaint", "claim", "letter", "legal", "complaint_letter"):
         return "gpt-4o"
     return "gpt-4o-mini"
-
 
 @app.post("/chat")
 async def chat_endpoint(body: ChatRequest, request: Request):
@@ -54,8 +53,7 @@ async def chat_endpoint(body: ChatRequest, request: Request):
     client_id = body.client_id
     user_agent = request.headers.get("user-agent", "")
 
-    # 1) Создаём request сразу (чтобы request_id был НЕ null)
-    request_id = None
+    request_id = Nonea
     db_error = None
     try:
         with SessionLocal() as db:
@@ -75,12 +73,10 @@ async def chat_endpoint(body: ChatRequest, request: Request):
         db_error = str(e)
         print(f"[db] insert pending failed: {db_error}")
 
-    # 2) RAG
     chunks = search_chunks(user_query, top_k=6)
     context_used = [c.text for c in chunks]
     context_text = "\n\n".join(context_used) if context_used else "Нет конкретной информации в базе знаний."
 
-    # 3) Prompt + LLM
     full_prompt = f"""
 Ты — профессиональный технический эксперт по стандартам ГОСТ/СНиП.
 
@@ -102,7 +98,6 @@ async def chat_endpoint(body: ChatRequest, request: Request):
     tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
     tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
 
-    # Примерная стоимость (можешь убрать если не нужно)
     if "mini" in model_name:
         in_price = 0.15
         out_price = 0.60
@@ -111,7 +106,6 @@ async def chat_endpoint(body: ChatRequest, request: Request):
         out_price = 10.00
     cost = (tokens_in * in_price + tokens_out * out_price) / 1_000_000
 
-    # 4) Обновляем запись (если request_id есть)
     if request_id is not None:
         try:
             with SessionLocal() as db:
@@ -146,10 +140,8 @@ async def chat_endpoint(body: ChatRequest, request: Request):
         "db_error": db_error,
     }
 
-
 @app.post("/rate")
 async def rate_endpoint(body: RateRequest):
-    # 1) Проверим, что request существует
     with SessionLocal() as db:
         exists = db.execute(
             sql_text("SELECT 1 FROM requests WHERE id = :id"),
@@ -159,7 +151,6 @@ async def rate_endpoint(body: RateRequest):
         if not exists:
             raise HTTPException(status_code=404, detail="request_id not found")
 
-        # 2) Пытаемся обновить с rating_created_at, если колонки нет — fallback
         try:
             db.execute(
                 sql_text("""
@@ -183,3 +174,6 @@ async def rate_endpoint(body: RateRequest):
             db.commit()
 
     return {"ok": True}
+
+# 2. ИНИЦИАЛИЗИРУЕМ ТЕЛЕГРАМ БОТА В САМОМ КОНЦЕ
+setup_telegram(app)
