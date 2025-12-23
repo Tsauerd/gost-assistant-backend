@@ -7,12 +7,19 @@ from typing import List, Optional
 from sqlalchemy import text as sql_text
 
 from .db import SessionLocal
-
-# Если эмбеддинги у тебя делаются в другом месте — подставь свою функцию.
 from openai import OpenAI
 
-_OPENAI = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Кэш, чтобы не ходить в БД каждый запрос
+_DB_VECTOR_DIMS: Optional[int] = None
+_EMBED_MODEL_RESOLVED: Optional[str] = None
+
+# Маппинг размерности -> модель
+DIMS_TO_MODEL = {
+    1536: "text-embedding-3-small",
+    3072: "text-embedding-3-large",
+}
 
 
 @dataclass
@@ -29,13 +36,63 @@ class Chunk:
     dense_score: Optional[float] = None
 
 
+def _detect_db_vector_dims() -> Optional[int]:
+    """
+    Возвращает размерность embedding в БД (например 1536).
+    Нужна функция pgvector vector_dims(vector).
+    """
+    global _DB_VECTOR_DIMS
+
+    if _DB_VECTOR_DIMS is not None:
+        return _DB_VECTOR_DIMS
+
+    q = sql_text("""
+        SELECT vector_dims(embedding) AS dims
+        FROM document_chunks
+        WHERE embedding IS NOT NULL
+        LIMIT 1
+    """)
+
+    try:
+        with SessionLocal() as db:
+            row = db.execute(q).mappings().first()
+            _DB_VECTOR_DIMS = int(row["dims"]) if row and row.get("dims") else None
+            return _DB_VECTOR_DIMS
+    except Exception as e:
+        print(f"[rag] failed to detect db vector dims: {e}")
+        return None
+
+
+def _resolve_embed_model() -> str:
+    """
+    1) Смотрим dims в БД
+    2) Подбираем модель
+    3) Если не получилось — берём EMBED_MODEL из env или small по умолчанию
+    """
+    global _EMBED_MODEL_RESOLVED
+
+    if _EMBED_MODEL_RESOLVED:
+        return _EMBED_MODEL_RESOLVED
+
+    dims = _detect_db_vector_dims()
+    if dims in DIMS_TO_MODEL:
+        _EMBED_MODEL_RESOLVED = DIMS_TO_MODEL[dims]
+        print(f"[rag] detected DB vector dims={dims}, using embed model={_EMBED_MODEL_RESOLVED}")
+        return _EMBED_MODEL_RESOLVED
+
+    env_model = os.getenv("EMBED_MODEL")
+    _EMBED_MODEL_RESOLVED = env_model or "text-embedding-3-small"
+    print(f"[rag] could not detect DB dims, using embed model={_EMBED_MODEL_RESOLVED}")
+    return _EMBED_MODEL_RESOLVED
+
+
 def _embed(text: str) -> List[float]:
-    resp = _OPENAI.embeddings.create(model=EMBED_MODEL, input=text)
+    model = _resolve_embed_model()
+    resp = client.embeddings.create(model=model, input=text)
     return resp.data[0].embedding
 
 
 def _to_pgvector_literal(vec: List[float]) -> str:
-    # pgvector принимает строку вида: [0.1,0.2,...]
     return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
 
@@ -44,16 +101,11 @@ def search_chunks(query: str, top_k: int = 6, std_pattern: Optional[str] = None)
     if not q:
         return []
 
-    # 1) Эмбеддинг
-    try:
-        q_emb = _embed(q)
-    except Exception as e:
-        print(f"[rag] embedding failed: {e}")
-        return []
-
+    # 1) Эмбеддинг запроса
+    q_emb = _embed(q)
     q_emb_vec = _to_pgvector_literal(q_emb)
 
-    # 2) DENSE поиск через pgvector
+    # 2) DENSE поиск
     dense_sql = sql_text("""
         SELECT
             c.id,
@@ -73,11 +125,10 @@ def search_chunks(query: str, top_k: int = 6, std_pattern: Optional[str] = None)
         LIMIT :limit
     """)
 
-    # Немного запас по кандидатам
     limit = max(top_k * 3, top_k)
 
     params = {
-        "q_emb": q_emb_vec,                 # строка "[..]" -> кастуется в vector
+        "q_emb": q_emb_vec,
         "std_pattern": std_pattern,
         "limit": limit,
     }
@@ -85,9 +136,9 @@ def search_chunks(query: str, top_k: int = 6, std_pattern: Optional[str] = None)
     with SessionLocal() as db:
         rows = db.execute(dense_sql, params).mappings().all()
 
-    chunks: List[Chunk] = []
+    out: List[Chunk] = []
     for r in rows[:top_k]:
-        chunks.append(
+        out.append(
             Chunk(
                 id=r["id"],
                 document_id=r["document_id"],
@@ -101,5 +152,4 @@ def search_chunks(query: str, top_k: int = 6, std_pattern: Optional[str] = None)
                 dense_score=float(r["dense_score"]) if r.get("dense_score") is not None else None,
             )
         )
-
-    return chunks
+    return out
