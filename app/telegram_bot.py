@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-import os
 import re
-import asyncio
-from typing import Dict, Any, List, Optional
+from typing import List
 
-import httpx
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.concurrency import run_in_threadpool
-
-from .chat_service import run_chat_sync
-
-# --- LaTeX -> Telegram plain unicode (как у тебя, но можно упрощать) ---
-
+# подстрочные индексы и степени
 SUB = str.maketrans("0123456789+-=()n", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₙ")
 SUP = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
 
@@ -38,8 +29,6 @@ HELP_TEXT = (
     "/claim — претензия\n"
 )
 
-_user_mode: Dict[int, str] = {}  # user_id -> task_type (память в RAM)
-
 
 def _strip_wrapped_commands(text: str) -> str:
     for _ in range(3):
@@ -51,6 +40,7 @@ def latex_to_telegram(text: str) -> str:
     if not text:
         return text
 
+    # снимаем math-обёртки
     text = re.sub(r"\$\$([\s\S]*?)\$\$", r"\1", text)
     text = re.sub(r"\\\[(.*?)\\\]", r"\1", text, flags=re.S)
     text = re.sub(r"\\\((.*?)\\\)", r"\1", text, flags=re.S)
@@ -61,6 +51,7 @@ def latex_to_telegram(text: str) -> str:
     for k, v in LATEX_MAP.items():
         text = text.replace(k, v)
 
+    # дроби
     def frac(m):
         a = m.group(1).strip()
         b = m.group(2).strip()
@@ -69,17 +60,15 @@ def latex_to_telegram(text: str) -> str:
     for _ in range(2):
         text = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", frac, text)
 
-    def sub2(m):
-        base = m.group(1)
-        idx = m.group(2)
-        return base + idx.translate(SUB)
-
-    text = re.sub(r"([A-Za-zА-Яа-я])_\{([0-9+\-()n=]+)\}", sub2, text)
+    # индексы
+    text = re.sub(r"([A-Za-zА-Яа-я])_\{([0-9+\-()n=]+)\}", lambda m: m.group(1) + m.group(2).translate(SUB), text)
     text = re.sub(r"([A-Za-zА-Яа-я])_([0-9]+)", lambda m: m.group(1) + m.group(2).translate(SUB), text)
 
+    # степени
     text = re.sub(r"([A-Za-zА-Яа-я0-9])\^\{([0-9+\-()n=]+)\}", lambda m: m.group(1) + m.group(2).translate(SUP), text)
     text = re.sub(r"([A-Za-zА-Яа-я0-9])\^([0-9]+)", lambda m: m.group(1) + m.group(2).translate(SUP), text)
 
+    # чистка
     text = re.sub(r"\\(left|right)\b", "", text)
     text = text.replace(r"\,", " ").replace(r"\;", " ").replace(r"\:", " ")
     text = re.sub(r"\\[a-zA-Z]+", "", text)
@@ -92,7 +81,7 @@ def latex_to_telegram(text: str) -> str:
 def split_telegram(text: str, max_len: int = 3500) -> List[str]:
     if len(text) <= max_len:
         return [text]
-    parts = []
+    parts: List[str] = []
     buf = text
     while len(buf) > max_len:
         cut = buf.rfind("\n", 0, max_len)
@@ -103,130 +92,3 @@ def split_telegram(text: str, max_len: int = 3500) -> List[str]:
     if buf:
         parts.append(buf)
     return parts
-
-
-async def tg_api(token: str, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(url, json=payload)
-        r.raise_for_status()
-        return r.json()
-
-
-async def send_message(token: str, chat_id: int, text: str) -> None:
-    await tg_api(token, "sendMessage", {
-        "chat_id": chat_id,
-        "text": text,
-        "disable_web_page_preview": True,
-    })
-
-
-async def set_webhook(token: str, webhook_url: str, secret: str) -> None:
-    await tg_api(token, "setWebhook", {
-        "url": webhook_url,
-        "secret_token": secret,
-        "drop_pending_updates": True,
-        # "allowed_updates": ["message"]  # можно ограничить
-    })
-
-
-def setup_telegram(app: FastAPI) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    public_base = os.getenv("PUBLIC_BASE_URL")
-    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
-
-    # Если переменных нет — просто не включаем Telegram
-    if not token or not public_base or not secret:
-        return
-
-    webhook_url = public_base.rstrip("/") + "/tg/webhook"
-
-    @app.on_event("startup")
-    async def _tg_startup():
-        # регистрируем webhook при старте сервиса
-        try:
-            await set_webhook(token, webhook_url, secret)
-        except Exception as e:
-            # важно не ронять весь сервис из-за телеги
-            print(f"[telegram] setWebhook failed: {e}")
-
-    @app.post("/tg/webhook")
-    async def tg_webhook(request: Request):
-        # проверяем секретный заголовок Telegram
-        got = request.headers.get("x-telegram-bot-api-secret-token")
-        if got != secret:
-            raise HTTPException(status_code=401, detail="Bad telegram secret token")
-
-        payload = await request.json()
-
-        # отвечаем Telegram быстро, а обработку делаем в фоне
-        asyncio.create_task(_handle_update(token, payload))
-        return {"ok": True}
-
-
-async def _handle_update(token: str, payload: Dict[str, Any]) -> None:
-    msg = payload.get("message") or payload.get("edited_message")
-    if not msg:
-        return
-
-    chat = msg.get("chat") or {}
-    sender = msg.get("from") or {}
-
-    chat_id = chat.get("id")
-    user_id = sender.get("id")
-    text = (msg.get("text") or "").strip()
-
-    if not chat_id or not user_id:
-        return
-
-    # команды
-    if text.startswith("/start"):
-        _user_mode[user_id] = "norm"
-        await send_message(token, chat_id, "GOST_AI в Telegram.\n\n" + HELP_TEXT)
-        return
-
-    if text.startswith("/norm"):
-        _user_mode[user_id] = "norm"
-        await send_message(token, chat_id, "Режим переключен: norm")
-        return
-
-    if text.startswith("/proc"):
-        _user_mode[user_id] = "procedure"
-        await send_message(token, chat_id, "Режим переключен: procedure")
-        return
-
-    if text.startswith("/calc"):
-        _user_mode[user_id] = "calculation"
-        await send_message(token, chat_id, "Режим переключен: calculation")
-        return
-
-    if text.startswith("/claim"):
-        _user_mode[user_id] = "complaint"
-        await send_message(token, chat_id, "Режим переключен: complaint")
-        return
-
-    if not text:
-        return
-
-    task_type = _user_mode.get(user_id, "norm")
-    client_id = f"tg:{user_id}"
-
-    # опционально: короткое "ищу..."
-    await send_message(token, chat_id, "Ищу в ГОСТах…")
-
-    try:
-        result = await run_in_threadpool(
-            run_chat_sync,
-            text,
-            task_type,
-            client_id,
-            "telegram-webhook",
-        )
-        raw_answer = result.get("answer") or "Нет ответа."
-        answer = latex_to_telegram(raw_answer)
-
-        for part in split_telegram(answer, max_len=3500):
-            await send_message(token, chat_id, part)
-
-    except Exception as e:
-        await send_message(token, chat_id, f"Ошибка: {e}")
