@@ -10,7 +10,8 @@ from fastapi.concurrency import run_in_threadpool
 
 from .db import SessionLocal
 from .chat_service import run_chat_sync
-from .telegram_bot import setup_telegram
+# 1) Обновленный импорт
+from .telegram_webhook import setup_telegram_webhook
 
 app = FastAPI(title="GOST Assistant Backend")
 
@@ -86,5 +87,5 @@ async def rate_endpoint(body: RateRequest):
 
     return {"ok": True}
 
-# подключаем Telegram webhook
-setup_telegram(app)
+# 2) Подключаем Telegram webhook с правильным названием функции
+setup_telegram_webhook(app)
