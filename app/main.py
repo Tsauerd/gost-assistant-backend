@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import text as sql_text
 from typing import Optional
 
+from fastapi.concurrency import run_in_threadpool
+
 from .db import SessionLocal
 from .chat_service import run_chat_sync
 from .telegram_webhook import setup_telegram_webhook
+
 
 app = FastAPI(title="GOST Assistant Backend")
 
@@ -48,7 +50,7 @@ async def chat_endpoint(body: ChatRequest, request: Request):
     client_id = body.client_id
     task_type = (body.task_type or "norm").lower()
 
-    # Запускаем синхронный пайплайн в threadpool (не блокируем event loop)
+    # запускаем синхронный пайплайн в threadpool, чтобы не блокировать event loop
     result = await run_in_threadpool(
         run_chat_sync,
         user_query,
@@ -91,5 +93,5 @@ async def rate_endpoint(body: RateRequest):
     return {"ok": True}
 
 
-# Подключаем Telegram webhook
+# ✅ подключаем Telegram webhook
 setup_telegram_webhook(app)
