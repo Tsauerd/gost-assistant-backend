@@ -32,12 +32,41 @@ LATEX_MAP = {
 
 HELP_TEXT = (
     "Напиши вопрос по ГОСТам.\n\n"
-    "Команды:\n"
-    "/norm — режим нормативки\n"
+    "Режимы (можно командами или кнопками):\n"
+    "/norm — нормативка\n"
     "/proc — процедура испытаний\n"
     "/calc — расчёт\n"
     "/claim — претензия\n"
 )
+
+INSTRUCTION_TEXT = (
+    "📘 Инструкция:\n"
+    "1) Нажми «🧭 Режимы» и выбери режим (или введи /norm /proc /calc /claim)\n"
+    "2) Напиши вопрос текстом\n"
+    "3) Бот вернёт ответ на основе базы\n"
+)
+
+# --- Reply keyboard (3 главные кнопки) ---
+MAIN_MENU_KB: Dict[str, Any] = {
+    "keyboard": [
+        [{"text": "🏠 Главная"}, {"text": "📘 Инструкция"}, {"text": "🧭 Режимы"}],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+    "one_time_keyboard": False,
+}
+
+# --- Подменю режимов ---
+MODES_KB: Dict[str, Any] = {
+    "keyboard": [
+        [{"text": "📝 Нормативка"}, {"text": "🧪 Процедура"}],
+        [{"text": "🧮 Расчёт"}, {"text": "⚠️ Претензия"}],
+        [{"text": "⬅️ Назад"}],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+    "one_time_keyboard": False,
+}
 
 _user_mode: Dict[int, str] = {}  # user_id -> task_type (RAM)
 
@@ -70,11 +99,27 @@ def latex_to_telegram(text: str) -> str:
     for _ in range(2):
         text = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", frac, text)
 
-    text = re.sub(r"([A-Za-zА-Яа-я])_\{([0-9+\-()n=]+)\}", lambda m: m.group(1) + m.group(2).translate(SUB), text)
-    text = re.sub(r"([A-Za-zА-Яа-я])_([0-9]+)", lambda m: m.group(1) + m.group(2).translate(SUB), text)
+    text = re.sub(
+        r"([A-Za-zА-Яа-я])_\{([0-9+\-()n=]+)\}",
+        lambda m: m.group(1) + m.group(2).translate(SUB),
+        text,
+    )
+    text = re.sub(
+        r"([A-Za-zА-Яа-я])_([0-9]+)",
+        lambda m: m.group(1) + m.group(2).translate(SUB),
+        text,
+    )
 
-    text = re.sub(r"([A-Za-zА-Яа-я0-9])\^\{([0-9+\-()n=]+)\}", lambda m: m.group(1) + m.group(2).translate(SUP), text)
-    text = re.sub(r"([A-Za-zА-Яа-я0-9])\^([0-9]+)", lambda m: m.group(1) + m.group(2).translate(SUP), text)
+    text = re.sub(
+        r"([A-Za-zА-Яа-я0-9])\^\{([0-9+\-()n=]+)\}",
+        lambda m: m.group(1) + m.group(2).translate(SUP),
+        text,
+    )
+    text = re.sub(
+        r"([A-Za-zА-Яа-я0-9])\^([0-9]+)",
+        lambda m: m.group(1) + m.group(2).translate(SUP),
+        text,
+    )
 
     text = re.sub(r"\\(left|right)\b", "", text)
     text = text.replace(r"\,", " ").replace(r"\;", " ").replace(r"\:", " ")
@@ -109,21 +154,34 @@ async def _tg_call(token: str, method: str, payload: Dict[str, Any]) -> Dict[str
         return r.json()
 
 
-async def _tg_send_message(token: str, chat_id: int, text: str) -> None:
-    await _tg_call(token, "sendMessage", {
+async def _tg_send_message(
+    token: str,
+    chat_id: int,
+    text: str,
+    reply_markup: Dict[str, Any] | None = None,
+) -> None:
+    payload: Dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,
         "disable_web_page_preview": True,
-    })
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    await _tg_call(token, "sendMessage", payload)
 
 
 async def _set_webhook(token: str, public_base_url: str, secret: str) -> None:
     webhook_url = public_base_url.rstrip("/") + "/telegram/webhook"
-    await _tg_call(token, "setWebhook", {
-        "url": webhook_url,
-        "secret_token": secret,
-        "drop_pending_updates": True,
-    })
+    await _tg_call(
+        token,
+        "setWebhook",
+        {
+            "url": webhook_url,
+            "secret_token": secret,
+            "drop_pending_updates": True,
+        },
+    )
 
 
 def setup_telegram_webhook(app: FastAPI) -> None:
@@ -140,9 +198,8 @@ def setup_telegram_webhook(app: FastAPI) -> None:
             "webhook_path": "/telegram/webhook",
         }
 
-    # Если не настроено — просто не включаем телеграм, но сервис НЕ падает
     if not token or not secret or not public_base:
-        print("[telegram] disabled: set TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, PUBLIC_BASE_URL")
+        print("[telegram] disabled: set TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, PUBLIC_BASE_URL(or BACKEND_URL)")
         return
 
     @app.on_event("startup")
@@ -151,19 +208,15 @@ def setup_telegram_webhook(app: FastAPI) -> None:
             await _set_webhook(token, public_base, secret)
             print("[telegram] webhook set OK")
         except Exception as e:
-            # не роняем сервис
             print(f"[telegram] setWebhook failed: {e}")
 
     @app.post("/telegram/webhook")
     async def telegram_webhook(request: Request):
-        # Telegram пришлет сюда POST, проверяем секрет в заголовке
         got = request.headers.get("x-telegram-bot-api-secret-token", "")
         if got != secret:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
         update = await request.json()
-
-        # отвечаем Telegram быстро, обработку делаем в фоне
         asyncio.create_task(_handle_update(token, update))
         return {"ok": True}
 
@@ -181,26 +234,69 @@ async def _handle_update(token: str, update: Dict[str, Any]) -> None:
         if not chat_id or not user_id:
             return
 
-        # команды режимов
+        # --------- КНОПКИ (Reply keyboard) ----------
+        if text == "🏠 Главная":
+            _user_mode[user_id] = "norm"
+            await _tg_send_message(token, chat_id, "Главная.\n\n" + HELP_TEXT, reply_markup=MAIN_MENU_KB)
+            return
+
+        if text == "📘 Инструкция":
+            await _tg_send_message(token, chat_id, INSTRUCTION_TEXT, reply_markup=MAIN_MENU_KB)
+            return
+
+        if text == "🧭 Режимы":
+            await _tg_send_message(token, chat_id, "Выбери режим:", reply_markup=MODES_KB)
+            return
+
+        if text == "⬅️ Назад":
+            await _tg_send_message(token, chat_id, "Главное меню:", reply_markup=MAIN_MENU_KB)
+            return
+
+        # Режимы кнопками
+        if text == "📝 Нормативка":
+            _user_mode[user_id] = "norm"
+            await _tg_send_message(token, chat_id, "Режим: norm", reply_markup=MAIN_MENU_KB)
+            return
+
+        if text == "🧪 Процедура":
+            _user_mode[user_id] = "procedure"
+            await _tg_send_message(token, chat_id, "Режим: procedure", reply_markup=MAIN_MENU_KB)
+            return
+
+        if text == "🧮 Расчёт":
+            _user_mode[user_id] = "calculation"
+            await _tg_send_message(token, chat_id, "Режим: calculation", reply_markup=MAIN_MENU_KB)
+            return
+
+        if text == "⚠️ Претензия":
+            _user_mode[user_id] = "complaint"
+            await _tg_send_message(token, chat_id, "Режим: complaint", reply_markup=MAIN_MENU_KB)
+            return
+
+        # --------- КОМАНДЫ ----------
         if text.startswith("/start"):
             _user_mode[user_id] = "norm"
-            await _tg_send_message(token, chat_id, "GOST_AI в Telegram.\n\n" + HELP_TEXT)
+            await _tg_send_message(token, chat_id, "GOST_AI в Telegram.\n\n" + HELP_TEXT, reply_markup=MAIN_MENU_KB)
             return
+
         if text.startswith("/norm"):
             _user_mode[user_id] = "norm"
-            await _tg_send_message(token, chat_id, "Режим: norm")
+            await _tg_send_message(token, chat_id, "Режим: norm", reply_markup=MAIN_MENU_KB)
             return
+
         if text.startswith("/proc"):
             _user_mode[user_id] = "procedure"
-            await _tg_send_message(token, chat_id, "Режим: procedure")
+            await _tg_send_message(token, chat_id, "Режим: procedure", reply_markup=MAIN_MENU_KB)
             return
+
         if text.startswith("/calc"):
             _user_mode[user_id] = "calculation"
-            await _tg_send_message(token, chat_id, "Режим: calculation")
+            await _tg_send_message(token, chat_id, "Режим: calculation", reply_markup=MAIN_MENU_KB)
             return
+
         if text.startswith("/claim"):
             _user_mode[user_id] = "complaint"
-            await _tg_send_message(token, chat_id, "Режим: complaint")
+            await _tg_send_message(token, chat_id, "Режим: complaint", reply_markup=MAIN_MENU_KB)
             return
 
         if not text:
@@ -209,7 +305,7 @@ async def _handle_update(token: str, update: Dict[str, Any]) -> None:
         task_type = _user_mode.get(user_id, "norm")
         client_id = f"tg:{user_id}"
 
-        await _tg_send_message(token, chat_id, "Ищу в ГОСТах…")
+        await _tg_send_message(token, chat_id, "Ищу в ГОСТах…", reply_markup=MAIN_MENU_KB)
 
         result = await run_in_threadpool(
             run_chat_sync,
@@ -223,13 +319,12 @@ async def _handle_update(token: str, update: Dict[str, Any]) -> None:
         answer = latex_to_telegram(raw_answer)
 
         for part in split_telegram(answer, max_len=3500):
-            await _tg_send_message(token, chat_id, part)
+            await _tg_send_message(token, chat_id, part, reply_markup=MAIN_MENU_KB)
 
     except Exception as e:
-        # если что-то пошло не так — пробуем сообщить пользователю
         try:
             chat_id = ((update.get("message") or {}).get("chat") or {}).get("id")
             if chat_id:
-                await _tg_send_message(token, chat_id, f"Ошибка: {e}")
+                await _tg_send_message(token, chat_id, f"Ошибка: {e}", reply_markup=MAIN_MENU_KB)
         except Exception:
             pass
