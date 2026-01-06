@@ -4,33 +4,17 @@ from __future__ import annotations
 import os
 import re
 import argparse
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 
 import pdfplumber
 from dotenv import load_dotenv
 from sqlalchemy import text as sql_text
-from openai import OpenAI
 
 from .db import SessionLocal
+from .rag import embed_text  # ВАЖНО: embed_text должен существовать в rag.py
 
 load_dotenv()
 
-# ===== Embeddings config =====
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-# поддержим оба имени переменной, чтобы не путаться между файлами
-EMBED_MODEL = (
-    os.getenv("OPENAI_EMBEDDING_MODEL", "").strip()
-    or os.getenv("EMBED_MODEL", "").strip()
-    or "text-embedding-3-small"
-)
-
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is missing in env")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-
-# -------------------- helpers: tables/text --------------------
 
 def clean_cell_text(text: Optional[str]) -> str:
     """Убираем лишние переносы и пробелы для 'плоского' текста."""
@@ -42,29 +26,27 @@ def clean_cell_text(text: Optional[str]) -> str:
 def page_to_markdown(page) -> str:
     """
     Текст + таблицы со страницы.
-    Таблицы:
-      - Markdown блок (чтобы LLM мог читать структуру)
-      - Вербализация строк (чтобы embedding лучше находил значения)
+    Таблицы: Markdown + вербализация (для улучшения поиска).
     """
     parts: List[str] = []
 
-    # 1) обычный текст
+    # 1) Текст
     text = page.extract_text() or ""
-    if text.strip():
-        parts.append(text.strip())
+    text = text.strip()
+    if text:
+        parts.append(text)
 
-    # 2) таблицы
-    tables = page.extract_tables()  # pdfplumber это поддерживает
+    # 2) Таблицы
+    tables = page.extract_tables()
     for t_idx, table in enumerate(tables or []):
-        if not table or not any(any(cell for cell in row) for row in table):
+        if not table or not table[0]:
             continue
 
-        header_raw = table[0] if table else []
+        header_raw = table[0]
         rows = table[1:] if len(table) > 1 else []
 
-        header_clean = [clean_cell_text(h) for h in header_raw]
+        clean_headers = [clean_cell_text(h) for h in header_raw]
 
-        # Markdown таблица
         md_lines: List[str] = []
         md_header = "| " + " | ".join(clean_cell_text(cell) for cell in header_raw) + " |"
         md_sep = "| " + " | ".join("---" for _ in header_raw) + " |"
@@ -73,54 +55,52 @@ def page_to_markdown(page) -> str:
 
         verbalized_rows: List[str] = []
 
-        for r_idx, row in enumerate(rows, start=1):
-            row_cells = [clean_cell_text(cell) for cell in row]
-            if not any(row_cells):
-                continue
+        for row in rows:
+            row = row or []
+            clean_row = [clean_cell_text(cell) for cell in row]
+            # markdown строка (по количеству колонок как header)
+            padded = (clean_row + [""] * len(clean_headers))[:len(clean_headers)]
+            md_lines.append("| " + " | ".join(padded) + " |")
 
-            md_lines.append("| " + " | ".join(row_cells) + " |")
+            row_pairs = []
+            for h, cell in zip(clean_headers, padded):
+                if h and cell:
+                    row_pairs.append(f"{h}: {cell}")
+            if row_pairs:
+                verbalized_rows.append("; ".join(row_pairs) + ".")
 
-            pairs: List[str] = []
-            for h, c in zip(header_clean, row_cells):
-                if h and c:
-                    pairs.append(f"{h}: {c}")
-
-            # добавим номер строки — удобно для ссылок
-            if pairs:
-                verbalized_rows.append(f"Строка {r_idx}: " + "; ".join(pairs) + ".")
-
-        md_table_block = "\n".join(md_lines).strip()
-        verbalized_block = "\n".join(verbalized_rows).strip()
+        md_table_block = "\n".join(md_lines)
+        verbalized_text_block = "\n".join(verbalized_rows).strip() or "(нет данных)"
 
         table_output = (
             f"\nТаблица {t_idx + 1}:\n"
-            f"{md_table_block}\n"
+            f"{md_table_block}\n\n"
+            f"Описание строк таблицы {t_idx + 1}:\n"
+            f"{verbalized_text_block}\n"
         )
-        if verbalized_block:
-            table_output += f"\nОписание таблицы {t_idx + 1} (построчно):\n{verbalized_block}\n"
-
         parts.append(table_output)
 
-    return "\n\n".join(p for p in parts if p.strip()).strip()
+    return "\n\n".join(parts).strip()
 
 
-def iter_pdf_pages_markdown(pdf_path: str) -> List[Tuple[int, str]]:
-    """Возвращаем список (page_no, text_with_tables) по страницам."""
-    out: List[Tuple[int, str]] = []
+def read_pdf_with_tables(pdf_path: str) -> str:
+    """Считываем PDF: текст + таблицы."""
+    all_parts: List[str] = []
     with pdfplumber.open(pdf_path) as pdf:
-        for i, page in enumerate(pdf.pages, start=1):
+        for page_idx, page in enumerate(pdf.pages):
             page_md = page_to_markdown(page)
-            if page_md.strip():
-                out.append((i, page_md))
-    return out
+            if page_md:
+                all_parts.append(f"=== Страница {page_idx + 1} ===\n{page_md}")
+    return "\n\n".join(all_parts)
 
 
-def split_text_to_chunks(text: str, max_chars: int = 2000, overlap_chars: int = 200) -> List[str]:
+def split_text_to_chunks(text: str, max_chars: int = 2000) -> List[str]:
     """
-    Чанкинг по абзацам (пустая строка).
-    overlap_chars — небольшой нахлёст, чтобы не терять связь на границе.
+    Чанкинг по пустым строкам (абзацам).
+    Длинные блоки режем по символам.
     """
     blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+
     chunks: List[str] = []
     current = ""
 
@@ -129,29 +109,19 @@ def split_text_to_chunks(text: str, max_chars: int = 2000, overlap_chars: int = 
 
         if len(candidate) <= max_chars:
             current = candidate
-            continue
-
-        # фиксируем текущий чанк
-        if current:
-            chunks.append(current)
-
-            # overlap: хвост предыдущего чанка
-            tail = current[-overlap_chars:] if overlap_chars and len(current) > overlap_chars else ""
         else:
-            tail = ""
+            if current:
+                chunks.append(current)
 
-        # если block сам слишком большой — режем грубо
-        if len(block) > max_chars:
-            start = 0
-            while start < len(block):
-                end = start + max_chars
-                piece = block[start:end].strip()
-                if piece:
-                    chunks.append(piece)
-                start = end
-            current = ""
-        else:
-            current = (tail + "\n\n" + block).strip() if tail else block
+            if len(block) <= max_chars:
+                current = block
+            else:
+                start = 0
+                while start < len(block):
+                    end = start + max_chars
+                    chunks.append(block[start:end].strip())
+                    start = end
+                current = ""
 
     if current:
         chunks.append(current)
@@ -159,68 +129,17 @@ def split_text_to_chunks(text: str, max_chars: int = 2000, overlap_chars: int = 
     return chunks
 
 
-# -------------------- helpers: embeddings/db --------------------
-
-def embed_text(text: str) -> List[float]:
-    """Единая функция эмбеддинга для ingest."""
-    resp = client.embeddings.create(model=EMBED_MODEL, input=text)
-    return resp.data[0].embedding
-
-
-def to_pgvector_literal(vec: List[float]) -> str:
-    return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
-
-
-def detect_existing_vector_dims(db) -> Optional[int]:
-    """
-    Узнаём размерность уже существующих embedding в БД.
-    Важно: если в таблице намешаны разные dims — будет боль при поиске.
-    """
-    q = sql_text("""
-        SELECT vector_dims(embedding) AS dims
-        FROM document_chunks
-        WHERE embedding IS NOT NULL
-        LIMIT 1
-    """)
-    row = db.execute(q).mappings().first()
-    if row and row.get("dims"):
-        return int(row["dims"])
-    return None
-
-
-def delete_document_if_exists(db, standard_number: str, year: int) -> None:
-    """
-    Удаляем документ и его чанки по (standard_number, year).
-    Это чтобы повторный ingest не делал дубли.
-    """
-    # найдём id
-    q = sql_text("""
-        SELECT id FROM documents
-        WHERE standard_number = :std AND year = :year
-        LIMIT 1
-    """)
-    row = db.execute(q, {"std": standard_number, "year": year}).mappings().first()
-    if not row:
-        return
-
-    doc_id = int(row["id"])
-
-    db.execute(sql_text("DELETE FROM document_chunks WHERE document_id = :id"), {"id": doc_id})
-    db.execute(sql_text("DELETE FROM documents WHERE id = :id"), {"id": doc_id})
-
-
 def extract_section_paragraph(chunk_text: str) -> Tuple[Optional[str], Optional[str]]:
     """
-    Эвристика:
-      - paragraph: 5.2 / 5.2.1 ...
-      - section: "5 Методы контроля"
+    section: "5"
+    paragraph: "5.2.1"
     """
     section = None
     paragraph = None
 
     lines = [l.strip() for l in chunk_text.splitlines() if l.strip()]
     if not lines:
-        return section, paragraph
+        return None, None
 
     full_text = "\n".join(lines)
 
@@ -235,132 +154,127 @@ def extract_section_paragraph(chunk_text: str) -> Tuple[Optional[str], Optional[
     return section, paragraph
 
 
+def purge_document(db, standard_number: str, year: Optional[int]) -> int:
+    """
+    Удаляет из БД документы и чанки по standard_number (+ year если задан).
+    Возвращает число удалённых документов.
+    """
+    where = "standard_number = :std"
+    params = {"std": standard_number}
+    if year is not None:
+        where += " AND year = :year"
+        params["year"] = year
+
+    ids = db.execute(
+        sql_text(f"SELECT id FROM documents WHERE {where}"),
+        params,
+    ).scalars().all()
+
+    if not ids:
+        return 0
+
+    db.execute(
+        sql_text("DELETE FROM document_chunks WHERE document_id = ANY(:ids)"),
+        {"ids": ids},
+    )
+    db.execute(
+        sql_text("DELETE FROM documents WHERE id = ANY(:ids)"),
+        {"ids": ids},
+    )
+    return len(ids)
+
+
 def ingest_pdf(
     pdf_path: str,
     standard_number: str,
     year: int,
     doc_name: Optional[str] = None,
-    replace_existing: bool = True,
-    max_chars: int = 2000,
-    overlap_chars: int = 200,
-    batch_size: int = 50,
-) -> None:
+    purge: bool = False,
+    source: str = "manual_ingest",
+):
     if doc_name is None:
         doc_name = os.path.basename(pdf_path)
 
-    if not os.path.exists(pdf_path):
-        raise FileNotFoundError(pdf_path)
+    print(f"Читаем PDF (текст + таблицы): {pdf_path}")
+    full_text = read_pdf_with_tables(pdf_path)
+    print(f"Длина текста: {len(full_text)} символов")
 
-    print(f"[ingest] PDF: {pdf_path}")
-    print(f"[ingest] EMBED_MODEL={EMBED_MODEL}")
+    chunks = split_text_to_chunks(full_text, max_chars=2000)
+    print(f"Чанков: {len(chunks)}")
 
-    pages = iter_pdf_pages_markdown(pdf_path)
-    if not pages:
-        print("[ingest] No text extracted from PDF (empty result).")
-        return
+    insert_doc_sql = sql_text("""
+        INSERT INTO documents (name, standard_number, year, source)
+        VALUES (:name, :std, :year, :src)
+        RETURNING id;
+    """)
 
+    insert_chunk_sql = sql_text("""
+        INSERT INTO document_chunks (document_id, chunk_index, text, section, paragraph, embedding)
+        VALUES (:doc_id, :idx, :text, :section, :paragraph, :embedding)
+    """)
+
+    # ВАЖНО: одна сессия на документ = быстрее
     with SessionLocal() as db:
-        # 1) Проверка размерности (если в БД уже есть эмбеддинги)
-        existing_dims = detect_existing_vector_dims(db)
-        # Сгенерируем 1 embedding на коротком тексте, чтобы узнать dims текущей модели
-        probe_vec = embed_text("probe")
-        model_dims = len(probe_vec)
+        if purge:
+            deleted = purge_document(db, standard_number=standard_number, year=year)
+            db.commit()
+            if deleted:
+                print(f"🧹 purge: удалено документов: {deleted}")
 
-        if existing_dims and existing_dims != model_dims:
-            raise RuntimeError(
-                f"DB already contains embeddings with dims={existing_dims}, "
-                f"but current model '{EMBED_MODEL}' returns dims={model_dims}. "
-                f"Нужно очистить document_chunks/documents (или держать одну модель)."
-            )
-
-        # 2) Удалим старую версию документа, если нужно
-        if replace_existing:
-            delete_document_if_exists(db, standard_number=standard_number, year=year)
-
-        # 3) Создаём документ
-        ins_doc = sql_text("""
-            INSERT INTO documents (name, standard_number, year, source)
-            VALUES (:name, :std, :year, :src)
-            RETURNING id;
-        """)
-        doc_id = db.execute(ins_doc, {
+        doc_id = db.execute(insert_doc_sql, {
             "name": doc_name,
             "std": standard_number,
             "year": year,
-            "src": f"ingest_pdfplumber:{EMBED_MODEL}",
+            "src": source,
         }).scalar()
         db.commit()
+        print(f"Создан documents.id = {doc_id}")
 
-        print(f"[ingest] documents.id={doc_id}")
+        for i, raw_chunk in enumerate(chunks):
+            if i % 10 == 0:
+                print(f"Обработка чанка {i+1}/{len(chunks)}...")
 
-        # 4) Готовим insert для чанков
-        ins_chunk = sql_text("""
-            INSERT INTO document_chunks
-                (document_id, chunk_index, text, section, paragraph, embedding)
-            VALUES
-                (:doc_id, :idx, :text, :section, :paragraph, :embedding)
-        """)
+            section, paragraph = extract_section_paragraph(raw_chunk)
 
-        chunk_index = 0
-        buffer_params: List[dict] = []
+            header_parts = [f"ГОСТ {standard_number}", str(year)]
+            if section:
+                header_parts.append(f"Раздел {section}")
+            if paragraph:
+                header_parts.append(f"Пункт {paragraph}")
 
-        for page_no, page_text in pages:
-            # режем на чанки внутри страницы
-            chunks = split_text_to_chunks(page_text, max_chars=max_chars, overlap_chars=overlap_chars)
+            header = " | ".join(header_parts)
+            chunk_text = f"[{header}]\n{raw_chunk}"
 
-            for raw_chunk in chunks:
-                section, paragraph = extract_section_paragraph(raw_chunk)
+            emb = embed_text(chunk_text)  # модель должна совпадать с rag.py
 
-                header_parts = [f"ГОСТ {standard_number}", str(year), f"Стр. {page_no}"]
-                if section:
-                    header_parts.append(f"Раздел {section}")
-                if paragraph:
-                    header_parts.append(f"Пункт {paragraph}")
+            # pgvector literal
+            emb_literal = "[" + ",".join(f"{x:.6f}" for x in emb) + "]"
 
-                header = " | ".join(header_parts)
-                chunk_text = f"[{header}]\n{raw_chunk}".strip()
+            db.execute(insert_chunk_sql, {
+                "doc_id": doc_id,
+                "idx": i,
+                "text": chunk_text,
+                "section": section,
+                "paragraph": paragraph,
+                "embedding": emb_literal,
+            })
 
-                vec = embed_text(chunk_text)
-                if len(vec) != model_dims:
-                    raise RuntimeError(f"Embedding dims mismatch: got {len(vec)} expected {model_dims}")
+            # коммитим порциями, чтобы не держать гигантскую транзакцию
+            if (i + 1) % 50 == 0:
+                db.commit()
 
-                buffer_params.append({
-                    "doc_id": doc_id,
-                    "idx": chunk_index,
-                    "text": chunk_text,
-                    "section": section,
-                    "paragraph": paragraph,
-                    "embedding": to_pgvector_literal(vec),
-                })
+        db.commit()
 
-                chunk_index += 1
-
-                if len(buffer_params) >= batch_size:
-                    db.execute(ins_chunk, buffer_params)
-                    db.commit()
-                    print(f"[ingest] inserted {chunk_index} chunks...")
-                    buffer_params.clear()
-
-        # вставим хвост
-        if buffer_params:
-            db.execute(ins_chunk, buffer_params)
-            db.commit()
-
-        print(f"[ingest] DONE. Total chunks inserted: {chunk_index}")
+    print("✅ Готово: документ и все чанки загружены.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest GOST PDF into DB")
-    parser.add_argument("--file", required=True, help="Путь к PDF-файлу")
-    parser.add_argument("--std", required=True, help="Номер стандарта (пример: '12345-2020' или 'ГОСТ 12345-2020')")
+    parser.add_argument("--file", required=True, help="Путь к PDF")
+    parser.add_argument("--std", required=True, help="Номер стандарта (например, 'ГОСТ 12345-2020')")
     parser.add_argument("--year", required=True, type=int, help="Год стандарта")
-    parser.add_argument("--name", help="Название документа (по умолчанию имя файла)")
-
-    parser.add_argument("--no-replace", action="store_true", help="НЕ удалять старую версию (по умолчанию удаляем)")
-    parser.add_argument("--max-chars", type=int, default=2000)
-    parser.add_argument("--overlap-chars", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=50)
-
+    parser.add_argument("--name", help="Название документа (по умолчанию — имя файла)")
+    parser.add_argument("--purge", action="store_true", help="Удалить старую версию этого стандарта перед загрузкой")
     args = parser.parse_args()
 
     ingest_pdf(
@@ -368,10 +282,7 @@ def main():
         standard_number=args.std,
         year=args.year,
         doc_name=args.name,
-        replace_existing=not args.no_replace,
-        max_chars=args.max_chars,
-        overlap_chars=args.overlap_chars,
-        batch_size=args.batch_size,
+        purge=args.purge,
     )
 
 
