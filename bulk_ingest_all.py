@@ -1,80 +1,76 @@
 # bulk_ingest_all.py
-from pathlib import Path
+from __future__ import annotations
+
+import argparse
 import re
+from pathlib import Path
+from typing import Optional, Tuple
 
-from app.ingest import ingest_pdf  # берем функцию из app/ingest.py
-
-# Папка с PDF ГОСТами
-FOLDER = Path(r"C:\Users\artem\Documents\gost-assistant-backend\data\new")
+from app.ingest import ingest_pdf
 
 
-def parse_std_and_year(base: str):
+def _normalize_filename(base: str) -> str:
+    s = base.strip()
+    s = s.replace("—", "-").replace("–", "-")
+    s = s.replace("_", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _two_digit_year_to_four(y: int) -> int:
+    # эвристика: 00–30 -> 2000+, иначе 1900+
+    return 2000 + y if y <= 30 else 1900 + y
+
+
+def parse_std_and_year(base: str) -> Tuple[Optional[str], Optional[int]]:
     """
-    base: имя файла без .pdf, например:
-      'GOST 10060 — 2012'
-      'GOST 26633-2015 – Heavy-weight and sand concretes'
-      'GOST 18353-79'
-      'SP 48.13330.2019'
-      'GOST-31937_2011.-Mezhgosudarstvenny-standart...'
-
-    Возвращает (standard_number, year) или (None, None), если не получилось.
+    Возвращает (standard_number, year_4digits) или (None, None).
     """
-    # Нормализуем тире, подчёркивания и т.п.
-    norm = (
-        base.replace("—", "-")
-            .replace("–", "-")
-            .replace("_", ".")
-    )
+    norm = _normalize_filename(base)
 
-    # Отделяем префикс (GOST / GOST R / SP) и остальную часть
-    m = re.match(r"^(GOST\s*R|GOSTR|GOST|SP)\s*[- ]*(.+)$", norm, re.IGNORECASE)
+    # prefix: GOST / GOST R / ГОСТ / ГОСТ Р / SP / СП
+    m = re.match(r"^(GOST\s*R|GOSTR|GOST|ГОСТ\s*Р|ГОСТР|ГОСТ|SP|СП)\s*[- ]*(.+)$", norm, re.IGNORECASE)
     if not m:
         return None, None
 
-    prefix = m.group(1).upper()
+    raw_prefix = m.group(1).upper().replace("  ", " ").strip()
     rest = m.group(2).strip()
 
-    if prefix == "GOSTR":
+    # нормализуем префикс
+    if raw_prefix in ("GOSTR",):
         prefix = "GOST R"
+    elif raw_prefix in ("ГОСТР",):
+        prefix = "ГОСТ Р"
+    else:
+        prefix = raw_prefix.replace("  ", " ")
 
-    # --- Случай СП: SP 48.13330.2019 ---
-    # Шаблон: 2 цифры . 5 цифр . (2–4 цифры года)
-    m_sp = None
-    if prefix.startswith("SP"):
-        m_sp = re.search(r"(\d{2}\.\d{5})\.(\d{2,4})", rest)
-    if m_sp:
-        code_main = m_sp.group(1)              # "48.13330"
-        y_str = m_sp.group(2)                  # "2019"
-        if len(y_str) == 4:
-            year = int(y_str)
-        else:
-            yy = int(y_str)
-            year = 2000 + yy if yy <= 30 else 1900 + yy
-        code = f"{code_main}.{y_str}"
-        standard_number = f"{prefix} {code}"
-        return standard_number, year
+    # --- СП: SP 48.13330.2019 ---
+    if prefix in ("SP", "СП"):
+        m_sp = re.search(r"(\d{1,3}\.\d{5})\.(\d{2,4})", rest)
+        if m_sp:
+            code_main = m_sp.group(1)   # 48.13330
+            y_str = m_sp.group(2)       # 2019 или 19
+            if len(y_str) == 4:
+                year = int(y_str)
+            else:
+                year = _two_digit_year_to_four(int(y_str))
+            standard_number = f"{prefix} {code_main}.{y_str}"
+            return standard_number, year
 
-    # --- Случай ГОСТ: число - год (с пробелами или без) ---
-    # Например:
-    #   "10060-2012"
-    #   "10060 - 2012"
-    #   "18353-79"
+    # --- ГОСТ: 26633-2015 или 18353-79 ---
     m_gy = re.search(r"\b(\d{4,6})\s*-\s*(\d{2,4})\b", rest)
     if m_gy:
-        num = m_gy.group(1)  # 10060
-        y_str = m_gy.group(2)  # "2012" или "79"
-
+        num = m_gy.group(1)
+        y_str = m_gy.group(2)
         if len(y_str) == 4:
             year = int(y_str)
         else:
-            yy = int(y_str)
-            year = 2000 + yy if yy <= 30 else 1900 + yy
+            year = _two_digit_year_to_four(int(y_str))
 
-        code = f"{num}-{y_str}"
-        standard_number = f"{prefix} {code}"
+        standard_number = f"{prefix} {num}-{y_str}"
         return standard_number, year
 
-    # --- Фоллбек: первая "большая" цифра + последний 4-значный год ---
+    # fallback: последний 4-значный год + первая крупная цифра
     y4_all = re.findall(r"\b(\d{4})\b", rest)
     year = int(y4_all[-1]) if y4_all else None
 
@@ -82,16 +78,24 @@ def parse_std_and_year(base: str):
     main_num = m_num.group(1) if m_num else None
 
     if main_num and year:
-        code = f"{main_num}-{year}"
-        standard_number = f"{prefix} {code}"
+        standard_number = f"{prefix} {main_num}-{year}"
         return standard_number, year
 
     return None, None
 
 
 def main():
-    print(f"Сканирую папку: {FOLDER}")
-    pdf_files = sorted(FOLDER.glob("*.pdf"))
+    parser = argparse.ArgumentParser(description="Bulk ingest all PDFs from folder into DB")
+    parser.add_argument("--folder", default=None, help="Папка с PDF (по умолчанию ./data/new)")
+    parser.add_argument("--replace", action="store_true", help="Удалять старые версии стандарта перед загрузкой")
+    args = parser.parse_args()
+
+    base_dir = Path(__file__).resolve().parent
+    folder = Path(args.folder) if args.folder else (base_dir / "data" / "new")
+    folder = folder.resolve()
+
+    print(f"Сканирую папку: {folder}")
+    pdf_files = sorted(folder.glob("*.pdf"))
 
     if not pdf_files:
         print("PDF-файлов не найдено.")
@@ -112,6 +116,7 @@ def main():
             standard_number=std,
             year=year,
             doc_name=base,
+            replace_existing=args.replace,
         )
 
     print("✅ Готово: все подходящие файлы обработаны.")
